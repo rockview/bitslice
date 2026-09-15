@@ -1,0 +1,336 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Image death handling.
+ *
+ *	Author:	J A Hall
+ *	Date:	13 May 87
+ */
+
+segment	death_rel;
+
+listing	!s;
+include	'comms.h';			/* OBP/GPP communications */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+include	'misc.h';			/* Miscellaneous routines */
+include	'out_band.h';			/* Band output */
+include	'scan_impl.h';			/* Scan conversion private */
+listing	s;
+
+entry	send_death_list, remove_char, remove_shape, remove_image;
+entry	remove_picture, remove_grad_tint, remove_scan, remove_tile;
+
+eject;
+/*
+ *	SEND_DEATH_LIST
+ *
+ *	- Sends a death list to the GPP.  List is sent even if no images
+ *	have died.
+ *
+ *	changed:
+ *		r0 r1 r13 L M
+ */
+send_death_list:
+	death_cnt E->L;				/* Get death count */
+	L<>-> r0, noinc;
+	0->L<>;					/* and reset it */
+
+	death_curr E->L;			/* Write count to buffer */
+	L<>-> r1, Y->MCL;
+	r0 ->M<>;
+
+	death_1 E->L;
+	L<>-> r0;
+	r0 cmp r1, cjp Ine l1;			/* Current buffer number 1? */
+
+	I_DEATH_LIST_1 E-> r13;			/* Yes: */
+	death_2 E-> r1;
+	jmp l2;
+
+l1:	I_DEATH_LIST_2 E-> r13;			/* No: */
+	death_1 E-> r1;
+
+l2:	jsb send_cmd;				/* Report which buffer */
+
+	r1 ->L;					/* Get new buffer start */
+	L<>-> r0;
+
+	death_curr E->L;			/* Set current buffer */
+	r0 ->L<>;
+
+	death_next E->L;			/* Reset pointer */
+	inc r0, Y->L<>;
+
+	poll_death E->MCL;			/* Clear death list poll loc. */
+	0->M<>, rtn;
+
+eject;
+/*
+ *	REMOVE_CHAR
+ *
+ *	- Removes a character record from the image list.  The dictionary
+ *	index is first added to current death buffer.  Not a subroutine.
+ *
+ *	in:
+ *		r5	char record pointer
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	changed:
+ *		r0 r1 L M
+ */
+remove_char:
+	jsb check_buf;				/* Check if buffer full */
+	jsb poll_buf;				/* Wait for buffer to be free */
+
+	death_cnt E->L;				/* Bump death count */
+	L<>-> r0, noinc;
+	inc r0, Y->L<>;
+
+	CR_DICT_INDEX E->D, add DA r5, Y->L;	/* Fetch dictionary index */
+	L<>-> r0;
+
+	death_next E->L;			/* and write to buffer */
+	L<>-> r1, Y->MCL, noinc;
+	r0 ->M<>;
+
+	inc r1, Y->L<>, jmp remove_image;	/* Bump pointer */
+
+eject;
+/*
+ *	CHECK_BUF
+ *
+ *	- Checks current death buffer and sends it to the GPP if full.
+ *
+ *	changed:
+ *		r0 L
+ */
+check_buf:
+	death_cnt E->L;
+	L<>-> r0;
+	death_len E->L;
+	L<>->D, subs DA r0, cjs Ieq send_death_list;	/* Buffer full? */
+
+	rtn;
+
+eject;
+/*
+ *	POLL_BUF
+ *
+ *	- Polls current death buffer control word for free condition.  The
+ *	control word is the first word in a death buffer.  The mechanism works
+ *	as follows:
+ *
+ *		The OBP fills a buffer, writes the number of dictionary indices
+ *		to the control word (a +ve number), and sends the buffer to
+ *		the GPP.
+ *
+ *		The GPP then reads it and sets the control word -ve when
+ *		finished.
+ *
+ *		Before the OBP attempts to refill the buffer it always checks
+ *		that the control word is -ve.
+ *
+ *	This ensures that the OBP doesn't write a buffer before the GPP has
+ *	finished reading it.
+ *
+ *	changed:
+ *		r0 L M
+ */
+poll_buf:
+	death_curr E->L;			/* Get buffer control word */
+	L<>->MCL;
+
+test_free:
+	M<>->Y, noinc, cjp In l6;		/* Buffer free? */
+	
+	DEATH_WAIT E-> r0;			/* NO: set death wait LED */
+	r0 ->LED;
+
+	jsb poll_delay;				/* Delay before retry */
+	jmp test_free;
+
+l6:	0->LED, rtn;				/* Clear LEDs */
+
+eject;
+/*
+ *	REMOVE_SHAPE
+ *
+ *	- Removes shape record from the image list.  The edge records are first
+ *	removed from the root record.  Not a subroutine.
+ *
+ *	in:
+ *		r5	shape record pointer
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	changed:
+ *		r0 L
+ */
+remove_shape:
+	SR_LEFT_REC E->D, add DA r5, Y->L;	/* Remove left edge record */
+	L<>-> r0, jsb put_rec;
+
+	SR_RIGHT_REC E->D, add DA r5, Y->L;	/* Remove right edge record */
+	L<>-> r0, jsb put_rec;
+
+	jmp remove_image;
+
+eject;
+/*
+ *	REMOVE_IMAGE
+ *
+ *	- Removes an image record from the image list.  If it is the last
+ *	record in the list the associated priority record is also removed.  Not
+ *	a subroutine.
+ *
+ *	in:
+ *		r3	current priority pointer
+ *		r4	last image pointer
+ *		r5	dead image record
+ *
+ *	usage:
+ *		r5	current image pointer
+ *		r14	last priority pointer
+ *		r15	next priority pointer
+ *
+ *	changed:
+ *		r0 r3 r5 r14 r15 L
+ */
+remove_image:
+	r5 -> r0, Y->L;
+	L<>-> r5, jsb put_rec;			/* Put record on free list */
+
+	test r4, cjp Iz/ l3;			/* Removed at head of list? */
+	test r5, cjp Iz/ l4;			/* Yes: removed at end? */
+
+	r3 ->L;					/* Yes: get next priority rec */
+	L<>-> r15;
+	PR_LAST E->D, add DA r3, Y->L;		/* Get last priority rec */
+	L<>-> r14, Y->L;
+
+	r15 ->L<>;				/* Relink last record */
+	PR_LAST E->D, add DA r15, Y->L;		/* Relink next record */
+	r14 ->L<>;
+
+	pl_curr E->L;
+	L<>-> r0, noinc;
+	r0 cmp r3, cjp Ine l5;			/* Was it current pri record? */
+
+	pl_head E->L<>;				/* Yes: set to priority head */
+
+l5:	r3 -> r0, jsb put_rec;			/* No: put rec on free list */
+	r15 -> r3, jmp next_pri;
+
+l4:	PR_IMAGE E->D, add DA r3, Y->L;		/* Relink to priority rec */
+	r5 ->L<>, jmp next_image;
+
+l3:	r4 ->L;					/* Relink to image list */
+	r5 ->L<>, jmp next_image;
+
+eject;
+/*
+ *	REMOVE_PICTURE
+ *
+ *	- Removes a line-art/bitmap/halftone record from the image list.
+ *	The picture control block pointer is first sent to the GPP.  Not a 
+ *	subroutine.
+ *
+ *	in:
+ *		r5	picture record pointer
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	changed:
+ *		r13 r14
+ */
+remove_picture:
+	I_PICTURE_DEATH E-> r13;			/* Send to GPP */
+	PI_PCB_PTR E->D, add DA r5, Y->L;
+	L<>->D, or DZ rX r14 RAMU, shift <0, jsb send_cmd;
+
+	jmp remove_image;
+
+eject;
+/*
+ *	REMOVE_GRAD_TINT
+ *
+ *	- Removes graduated tint record from the image list.  The horizontal
+ *	and vertical records are first removed from the root record.  Not a
+ *	subroutine.
+ *
+ *	in:
+ *		r5	graduated tint record pointer
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	changed:
+ *		r0 L
+ */
+remove_grad_tint:
+	GT_HORIZ_REC E->D, add DA r5, Y->L;	/* Remove horizontal rec */
+	L<>-> r0, jsb put_rec;
+
+	GT_LEFT_REC E->D, add DA r5, Y->L;	/* Remove left vertical rec */
+	L<>-> r0, jsb put_rec;
+
+	GT_RIGHT_REC E->D, add DA r5, Y->L;	/* Remove right vertical rec */
+	L<>-> r0, jsb put_rec;
+
+	jmp remove_image;
+
+eject;
+/*
+ *	REMOVE_SCAN
+ *
+ *	- Removes scan conversion record from the image list.  The dictionary
+ *	index is first fetched from the parameter record which is then removed
+ *	from the root record.  Not a subroutine.
+ *
+ *	in:
+ *		r5	scan conversion record pointer
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	changed:
+ *		r0 r1 r2 Q L M
+ */
+remove_scan:
+	SC_PARAM_REC E->D, add DA r5, Y->L;	/* Remove parameter record */
+	L<>-> r0, jsb put_rec;
+
+	jmp remove_char;			/* Remove root record */
+
+eject;
+/*
+ *	REMOVE_TILE
+ *
+ *	- Removes tiled rectangle record from the image list.  Not a subroutine.
+ *
+ *	in:
+ *		r5	tiled rectangle record pointer
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	changed:
+ *		r0 L
+ */
+remove_tile:
+	TI_PARAM_REC E->D, add DA r5, Y->L;	/* Remove parameter record */
+	L<>-> r0, jsb put_rec;
+	
+	I_TILE_DEATH E-> r13;			/* Send to GPP */
+	TI_TILE_ID E->D, add DA r5, Y->L;
+	L<>-> r14, jsb send_cmd;
+
+	jmp remove_image;
+
+	end;

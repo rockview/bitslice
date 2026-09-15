@@ -1,0 +1,51 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 13 - Status register boot.
+ *
+ *	PASS-	Write zero in control word (locn 0).
+ *	FAIL-	Write non-zero in control word (locn 0):
+ *
+ *	- Read status register and test boot is active.  If not active
+ *	write non-zero control word and interrupt else write zero control
+ *	word and interrupt.  
+ *
+ *	Author:	J A Hall
+ *	Date:	28 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 13, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	13;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	S_BOOT/TF E-> r1;		/* Read and test status register */
+	STAT-> r0;
+	and AB r0 r1, cjp Iz fail;
+
+	TEST_LED E-> r14;
+	0-> r0, jmp finish;
+
+fail:	ERR_LED E-> r14;		/* Test failed, boot not active */
+	1 E-> r0;
+
+finish:	0->Y, Y->MCL;			/* Write control word */
+	r0 ->M<>;
+
+	L_INTR E-> r15;			/* Generate interrupt */
+	r15 ->LED;	
+	r14 ->LED;			/* Clear interrupt */
+
+	jmp '$';			/* Loop forever */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

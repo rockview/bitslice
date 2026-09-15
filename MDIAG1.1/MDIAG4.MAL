@@ -1,0 +1,66 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 4 - Unconditional sequencer (AM2910).
+ *
+ *	PASS-	Interrupt.
+ *	FAIL-	Loop.
+ *
+ *	- Test the following AM2910 instructions:
+ *		jz	by implication
+ *		cont	by implication
+ *		jmp
+ *		jsb
+ *		rtn
+ *
+ *	Author:	J A Hall
+ *	Date:	26 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 4, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	4;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	/* jz (0) --	Jump to address 0.  Must work otherwise
+	 *		wouldn't get here
+	 * cont (E) --	Take next address in sequence.  Can't devise a
+	 *		test for this
+	 */
+	cont;
+
+	/* jmp (3) --	Take PL
+	 */
+	jmp l1;
+
+fail:	ERR_LED E-> r0;			/* jmp failed to take PL */
+	r0 ->LED, jz;			/* Use jz because jmp doesn't work */
+
+	/* jsb (1) --	Push next address and take PL
+	 */
+l1:	jsb l2;
+	jmp fail;			/* jsb failed to take PL */
+
+l2:	jsb l3;
+
+	L_INTR E-> r0;			/* Test complete, generate interrupt */
+	r0 ->LED;
+	TEST_LED E-> r0;		/* Clear interrupt */
+	r0 ->LED;
+	jmp '$';			/* Loop forever */
+
+	/* rtn (A) --	Take address from stack and pop
+	 */
+l3:	rtn;
+	jmp fail;			/* rtn failed to take stack */
+
+org	h'fff';
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

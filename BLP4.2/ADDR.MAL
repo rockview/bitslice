@@ -1,0 +1,156 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Image data address computation and data block chaining.
+ *
+ *	Author:	J A Hall
+ *	Date:	13 May 87
+ */
+
+segment	addr_rel;
+
+listing	!s;
+include	'comms.h';			/* OBP/GPP communications */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+include	'misc.h';			/* Miscellaneous routines */
+listing	s;
+
+entry	mk_addr, chain_blk, chain_pic, chain_scan, chain_tile;
+
+eject;
+/*
+ *	MK_ADDR
+ *
+ *	- Makes an image address from a data block number.  Data blocks are
+ *	128 words long.
+ *
+ *	in:
+ *		r0	data block number
+ *
+ *	out:
+ *		r12	image address (hi)
+ *		r13	image address (lo)
+ *
+ *	changed:
+ *		r12 r13 Q L
+ */
+mk_addr:
+	r0 ->Q;					/* Load r/Q pair */
+
+	0-> r12, phlc 6;			/* Shift r/Q pair up 7 */
+	or ZA r12 r12 RAMQU, shift <<0, rfct;
+
+	image_base E->L;			/* Add base address */
+	L<>->D, add DQ rX r13 RAMF, I->M;
+	L<>->D, addMc DA r12 r12 RAMF, rtn;
+
+eject;
+/*
+ *	CHAIN_BLK
+ *
+ *	- Follows image block number chain and fetches first word of data 
+ *	from the new block.
+ *
+ *	in:
+ *		r0	next data block number
+ *		r5	current image pointer
+ *		r9	repeat count
+ *
+ *	out:
+ *		r0 	image word from new data block
+ *
+ *	changed:
+ *		r0 L M
+ */
+chain_blk:
+	jsb mk_addr;				/* Make address from block no */
+
+	test r9, cjp Iz/ rpt;			/* In a repeated line? */
+
+	GR_ADDR_HI E->D, add DA r5, Y->L;	/* No: save new page address */
+	r12 ->L<>;
+
+rpt:	r12 ->MH;				/* Yes: load new data address */
+	r13 ->ML;
+
+	M<>-> r0, rtn;				/* Fetch first word of data */
+
+eject;
+/*
+ *	CHAIN_PIC
+ *
+ *	- Chains a picture image block.  Before following the chain the
+ *	picture control block is examined for interrupt and stop conditions.
+ *
+ *	in:
+ *		r0	next data block number
+ *		r5	current image pointer
+ *		r9	repeat count
+ *		r11	picture control block pointer
+ *
+ *	out:
+ *		r0 	image word from new data block
+ *
+ *	changed:
+ *		r0 r13 r14 r15 M
+ */
+chain_pic:
+	r0 -> r15;
+	test r9, cjp Iz/ dont_int;		/* In repeat across blocks? */
+
+	or ZA r11 r14 RAMU, shift <0, Y->MCL;	/* No: write current block no */
+	r0 ->M<>;
+
+	M<>-> r0;				/* Read interrupt block no. */
+	r0 cmp r15, cjp Ine dont_int;		/* Interrupt for more data? */
+
+	I_PICTURE_UPDATE E-> r13;		/* Yes: */
+	jsb send_cmd;
+
+dont_int:
+	STOP_BLK_OFF E->D, add DA r11, Y->MCL;	/* No: load stop block addr */
+
+poll_stop:
+	M<>-> r0, noinc;			/* Read stop block number */
+	r0 cmp r15, cjp Ine dont_stop;		/* Should we stop? */
+
+	PIC_WAIT E-> r0;			/* Yes: set picture wait LED */
+	r0 ->LED;
+
+	jsb poll_delay;				/* Wait before retry */
+	jmp poll_stop;
+
+dont_stop:
+	0->LED;					/* Clear LEDs */
+	r15 -> r0, jmp chain_blk;		/* Follow chain */
+
+eject;
+/*
+ *	CHAIN_SCAN/CHAIN_TILE
+ *
+ *	- Chains scan conversion or tile data block and fetches first word of
+ *	the new data block.
+ *
+ *	in:
+ *		r0	next data block number
+ *		r12	data address (hi)
+ *
+ *	out:
+ *		r0	first word from new data block
+ *		r12	data address (hi)
+ *
+ *	changed:
+ *		r0
+ */
+chain_scan:
+chain_tile:
+	jsb mk_addr;				/* Make address from block no */
+
+	r12 ->MH;				/* Load new data address */
+	r13 ->ML;
+
+	M<>-> r0, rtn;				/* Fetch first data word */
+
+	end;

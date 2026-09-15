@@ -1,0 +1,256 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Character image support.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4
+ *	+----------------------------------+
+ *	|  1   | skip |image | dict |  x   |
+ *	|      |      |blkno |index |      |
+ *	+----------------------------------+
+ *
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  1   | skip |    data     | dict |  x   |repeat|  x   |  y   |
+ *	|      |      |      |   address   |index |      |      |phase |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Author:	J A Hall
+ *	Date:	17 Mar 87
+ */
+
+segment	char_rel;
+
+listing	!s;
+include	'addr.h';			/* Image block number conversion */
+include	'death.h';			/* Image death handling */
+include	'list.h';			/* Priority/image list */
+include 'pattern.h';			/* Patterning support */
+include	'phase.h';			/* Initial pattern/tint phase calc. */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+listing	s;
+
+entry	in_char, in_char_start, out_char, pat_char;
+
+eject;
+/*
+ *	IN_CHAR
+ *
+ *	- Inputs a character addition record.  Not a subroutine.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r8 r9
+ *
+ *	changed:
+ *		L
+ */
+in_char:
+	jsb in_char_start;			/* Read start of char. record */
+	0->L<>, jmp calc_phase;			/* Clear repeat, calc. phase */
+
+eject;
+/*
+ *	IN_CHAR_START
+ *
+ *	- Inputs a start of char/scan conversion image record.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r8 r9
+ *
+ *	changed:
+ *		r0 L M
+ */
+in_char_start:
+	M<>-> r0, jsb mk_addr;			/* Convert/write block number */
+	GR_ADDR_HI E->D, add DA r5, Y->L;
+	r12 ->L<>;
+	r13 ->L<>;
+
+	M<>->L<>;				/* Copy dictionary index */
+
+	M<>-> r0;				/* Fetch x-posn, add offset */
+	add AB r15 r0 RAMF, Y->L<>, rtn;
+
+eject;
+/*
+ *	OUT_CHAR
+ *
+ *	- Outputs a band of scan-lines for a character.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	x-posn
+ *		r9	repeat count
+ *		r10	end of line constant
+ *		r11	data start address for repeated line
+ *
+ *	changed:
+ *		r0 r6 r8 r9 r10 r11 L M
+ */
+out_char:
+	L<>->MH;				/* Load image data address */
+	L<>-> r11, Y->ML;
+	L<>->Y;					/* Discard dictionary index */
+	L<>-> r8;				/* Fetch x-posn */
+	L<>-> r9;				/* Fetch repeat count */
+
+	0->IO OBB_BIT_CON, ack;			/* Clear high order run bits */
+	h'8000' E-> r10;			/* Set end-of-line constant */
+
+out_line:
+	test r9, cjp Iz l1;			/* In repeated line? */
+
+	GR_ADDR_HI E->D, add DA r5, Y->L;	/* Yes: load high addr */
+	L<>->MH;
+
+	subr1 ZB r11 r9 RAMA, Y->ML, jmp l2;	/* Dec rpt, load low addr */
+
+l1:	M<>-> r0, cjs_Blkno chain_blk;		/* No: Read data word */
+	test r0, cjp Iz/ l3;			/* Line starts with 0 run? */
+
+	M<>-> r0, cjs_Blkno chain_blk;		/* Yes: read data word */
+	test r0, cjp Iz remove_char;		/* End of image? */
+
+	ML-> r11;				/* No: save run start addr */
+	subr1 ZA r0 r9 RAMF;			/* Make repeat count */
+
+l2:	M<>-> r0, cjs_Blkno chain_blk;		/* Read run */
+
+l3:	r0 cmp r10, cjp Ieq out_eol;		/* Blank line? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* No: load line address */
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+
+out_run:r0 ->IO OBB_RUN_DATA, ack;		/* Load run */
+
+	M<>-> r0, cjs_Blkno chain_blk;		/* Read run */
+	r0 cmp r10, cjp Ine out_run;		/* End of line? */
+
+out_eol:inc r6;					/* Bump line address */
+	r6 cmp r7, cjp Ine out_line;		/* Finished band? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes */
+
+	test r9, cjp Iz l4;			/* In repeated line? */
+	r11 ->L<>, jmp l5;			/* Yes: save run start addr */
+
+l4:	ML->L<>;				/* No: save new line address */
+
+l5:	CR_REPEAT E->D, add DA r5, Y->L;	/* Save repeat count */
+	r9 ->L<>, jmp image_alive;
+
+eject;
+/*
+ *	PAT_CHAR
+ *
+ *	- Outputs a band of scan-lines for a patterned character.
+ *	Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	x-posn
+ *		r9	repeat count
+ *		r10	end of line constant
+ *		r11	data start address for repeated line
+ *
+ *	changed:
+ *		r0 r6 r8 r9 r10 r11 L M
+ */
+pat_char:
+	L<>->MH;				/* Load image data address */
+	L<>-> r11, Y->ML;
+	L<>->Y;					/* Discard dictionary index */
+	L<>-> r8;				/* Fetch x-posn */
+	L<>-> r9;				/* Fetch repeat count */
+
+	0->IO OBB_BIT_CON, ack;			/* Clear high order run bits */
+	h'8000' E-> r10;			/* Set end-of-line constant */
+
+pat_line:
+	test r9, cjp Iz l7;			/* In repeated line? */
+
+	GR_ADDR_HI E->D, add DA r5, Y->L;	/* Yes: load high addr */
+	L<>->MH;
+
+	subr1 ZB r11 r9 RAMA, Y->ML, jmp l8;	/* Dec rpt, load low addr */
+
+l7:	M<>-> r0, cjs_Blkno chain_blk;		/* No: Read data word */
+	test r0, cjp Iz/ l9;			/* Line starts with 0 run? */
+
+	M<>-> r0, cjs_Blkno chain_blk;		/* Yes: read data word */
+	test r0, cjp Iz remove_char;		/* End of image? */
+
+	ML-> r11;				/* No: save run start addr */
+	subr1 ZA r0 r9 RAMF;			/* Make repeat count */
+
+l8:	M<>-> r0, cjs_Blkno chain_blk;		/* Read run */
+
+l9:	r0 cmp r10, cjp Ieq pat_eol;		/* Blank line? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* No: load line address */
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+
+	jsb calc_pat;				/* Compute pattern */
+
+pat_run:test r1, cjp Iz/ l11;			/* Output this run? */
+
+	r0 ->IO OBB_RUN_DATA, ack;		/* Yes: load run */
+
+l11:	M<>-> r0, cjs_Blkno chain_blk;		/* No: read run */
+	r0 cmp r10, cjp Ine pat_run;		/* End of line? */
+
+pat_eol:inc r6, jsb inc_pat;			/* Bump addr, increment phase */
+	r6 cmp r7, cjp Ine pat_line;		/* Finished band? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes: */
+
+	test r9, cjp Iz l10;			/* In repeated line? */
+	r11 ->L<>, jmp l12;			/* Yes: save run start addr */
+
+l10:	ML->L<>;				/* No: save new line address */
+
+l12:	CR_REPEAT E->D, add DA r5, Y->L;	/* Save repeat count */
+	r9 ->L<>, jmp image_alive;
+
+	end;

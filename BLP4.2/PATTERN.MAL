@@ -1,0 +1,220 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Calculates and tracks patterns.
+ *
+ *	Author:	J A Hall
+ *	Date:	10 Jun 87
+ */
+
+segment	pattern_rel;
+
+listing	!s;
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'math.h';			/* Arithmetic support */
+include 'obb.h';			/* OBB register definitions */
+listing	s;
+
+entry	calc_pat, inc_pat, phase_skip;
+
+eject;
+/*
+ *	CALC_PAT
+ *
+ *	- Calculates the next pattern parameters and loads the pattern decoder
+ *	for the output of the next run.  The following variables are involved:
+ *
+ *		Name	Description
+ *
+ *		a	white pattern length
+ *		b	black pattern length
+ *		xp	horizontal pattern phase
+ *		yp	vertical pattern phase
+ *		i	initial pattern run
+ *		c	initial run colour
+ *				0- white
+ *				1- black
+ *
+ *	in:
+ *		r3	current priority pointer
+ *		r5	current image pointer
+ *		r8	mask run start position
+ *
+ *	out:
+ *		r1	flags run output
+ *				0- output
+ *				1- no output
+ *
+ *	in use:
+ *		r0 r3 r4 r5 r6 r7 r8 r9 r10 r11
+ *
+ *	usage:
+ *		r1	pattern type
+ *		r2	a
+ *		r12	a + b
+ *		r13	xp
+ *		r14	yp
+ *		r15	b
+ *
+ *	changed:
+ *		r1 r2 r12 r13 r14 r15 Q L
+ */
+calc_pat:
+	GR_XPHASE E->D, add DA r5, Y->L;
+	L<>-> r13;				/* Fetch xp */
+	L<>-> r14;				/* Fetch yp */
+
+	PR_PAT_TYPE E->D, add DA r3, Y->L;
+	L<>-> r1;				/* Fetch type */
+	L<>-> r2;				/* Fetch a */
+	L<>-> r15;				/* Fetch b */
+	L<>-> r12;				/* Fetch a + b */
+
+	dec r1, cjp Iz type1;			/* Type 1? */
+	dec r1, cjp Iz type2;			/* Type 2? */
+	dec r1, cjp Iz type3;			/* Type 3? */
+	dec r1, cjp Iz type4;			/* Type 4? */
+	dec r1, cjp Iz type5;			/* Type 5? */
+
+/* -------------------------------- Type 6 ---------------------------------  */
+	r13 += r14;				/* xp += yp;                  */
+	r13 cmp r12, cjp Iult type1;		/* if (xp >= (a + b))         */
+	r13 -= r12, jmp type1;			/*	xp -= (a + b);        */
+						/* output patterned run       */
+
+/* -------------------------------- Type 1 ---------------------------------  */
+type1:
+pat_run:0-> r1;					/* Clear return register      */
+	L<>-> r14;				/* Fetch packed a b           */
+	r14 ->IO OBB_PAT_RUN, ack;		/* Load pattern runs          */
+
+	r13 cmp r2, cjp Iuge l10;		/* if (xp < a) {              */
+
+	subs AB r2 r13 RAMF, jmp l17;		/*	i = a - xp; c = 0;    */
+						/* } else {                   */
+l10:	subs AB r12 r13 RAMF;			/* 	i = (a + b) - xp;     */
+	OBB_COLOUR E->D, or DA r13 r13 RAMF;	/*	c = 1;                */
+						/* }                          */
+l17:	h'0007' E->D, and DA r8 r14 RAMF;	/* Add initial offset in byte */
+	add AB r13 r14, Y->IO OBB_INTL_RUN, rtn;
+
+/* -------------------------------- Type 2 ---------------------------------  */
+type2:	r14 cmp r2, crtn Iuge;			/* if (yp >= a)               */
+						/*	output plain run      */
+skip_run:					/* else                       */
+	1 E-> r1, rtn;				/* 	skip run              */
+
+/* -------------------------------- Type 3 ---------------------------------  */
+type3:	r14 cmp r2, cjp Iuge pat_run;		/* if (yp >= a)               */
+						/*	output patterned run  */
+						/* else                       */
+	1 E-> r1, rtn;				/* 	skip run              */
+
+/* -------------------------------- Type 4 ---------------------------------  */
+type4:	r2 cmp r15, cjp Ine l15;	/* if (a == b) {                      */
+	r14 cmp r2, cjp Iult pat_run;	/*	if (yp >= a)                  */
+	r13 += r2, jmp l18;		/*		xp += a;              */
+					/*      output patterned run          */
+l15:	r2 cmp r15, cjp Iuge l16;	/* } else if (a < b) {                */
+	r15 -> r1;			/*	sep = (b - a) / 2;            */
+	subr AB r2 r1 RAMD, shift 0>;
+	r1 ->Q;
+
+	r14 cmp r2, cjp Iult pat_run;	/*	if (yp < a)                   */
+					/*		output patterned run  */
+	add AQ r2 r1 RAMF;		/*	else if (yp < a + sep)        */
+	r14 cmp r1, cjp Iult plain_run;	/*		output plain run      */
+	subs AQ r12 r1 RAMF;		/*	else if (yp >= (a + b) - sep) */
+	r14 cmp r1, cjp Iuge plain_run;	/*		output plain run      */
+					/*	else {                        */
+	add AQ r2 r1 RAMF;		/*		px += a + sep;        */
+	r13 += r1;
+l18:	r13 cmp r12, cjp Iult pat_run;	/*		if (px >= (a + b))    */
+	r13 -= r12, jmp pat_run;	/*			px -= (a + b);*/
+					/*		output patterned run  */
+					/*	}                             */
+					/* } else {                           */
+l16:	r2 -> r1;			/*	sep = (a - b) / 2;            */
+	subr AB r15 r1 RAMD, shift 0>;
+	r1 ->Q;
+
+	r14 cmp r15, cjp Iult pat_run;	/*	if (yp < b)                   */
+					/*		output patterned run  */
+	add AQ r15 r1 RAMF;		/*	else if (yp < b + sep)        */
+	r14 cmp r1, cjp Iult skip_run;	/*		skip run              */
+
+	subs AQ r12 r1 RAMF;		/*	else if (yp >= (a + b) - sep) */
+	r14 cmp r1, cjp Iuge skip_run;	/*		skip run              */
+					/*	else {                        */
+	add AQ r15 r1 RAMF;		/*		xp += b + sep;        */
+	r13 += r1;
+	r13 cmp r12, cjp Iult pat_run;	/*		if (xp >= (a + b))    */
+	r13 -= r12, jmp pat_run;	/*			xp -= (a + b);*/
+					/*		output patterned run  */
+					/*	}                             */
+					/* }                                  */
+plain_run:
+	0-> r1, rtn;			/* Output plain run                   */
+
+/* -------------------------------- Type 5 ---------------------------------  */
+type5:	r13 -= r14, cjp In/ pat_run;		/* xp -= yp;                  */
+						/* if (xp < 0)                */
+	r13 += r12, jmp pat_run;		/*	xp += (a + b);        */
+						/* output patterned run       */
+
+eject;
+/*
+ *	INC_PAT
+ *
+ *	- Increments vertical pattern phase word.
+ *
+ *	in:
+ *		r3	current priority pointer
+ *		r5	current image pointer
+ *
+ *	changed:
+ *		r12 r14 L
+ */
+inc_pat:
+	PR_PAT_A+B E->D, add DA r3, Y->L;	/* Fetch a + b */
+	L<>-> r12;
+
+	GR_YPHASE E->D, add DA r5, Y->L;
+	L<>->D, add1 DZ rX r14 RAMF, noinc;	/* yp++;	      */
+
+	r14 cmp r12, cjp Ine l9;		/* if (yp == (a + b)) */
+	0->L<>, rtn;				/* 	yp = 0;       */
+l9:	r14 ->L<>, rtn;
+
+eject;
+/*
+ *	PHASE_SKIP
+ *
+ *	- Recomputes the vertical pattern phase after a span of blank lines
+ *	in a scan conversion image.
+ *
+ *	in:
+ *		r3	current priority pointer
+ *		r5	current image pointer
+ *		r6	line address
+ *
+ *	changed:
+ *		r0 r1 Q L
+ */
+phase_skip:
+	PR_PAT_TYPE E->D, add DA r3, Y->L;	/* Get pattern type */
+	L<>->Y, crtn Iz;			/* Image patterned? */
+
+	line_no E->L;				/* Yes: compute vertical */
+	L<>-> r1;				/* position of the next */
+	L<>->D, add DA r6 rX QREG, I->M;	/* part of the image */
+	addMc ZA r1 r1 RAMF;
+
+	PR_PAT_A+B E->D, add DA r3, Y->L;	/* Compute y-phase */
+	L<>-> r0, jsb div32;
+
+	GR_YPHASE E->D, add DA r5, Y->L;	/* Save y-phase */
+	r1 ->L<>, rtn;
+
+	end;

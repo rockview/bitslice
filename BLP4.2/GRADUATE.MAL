@@ -1,0 +1,409 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Graduated tint rectangle support.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	|  8   | skip |depth |  x   | cell |brea- |  t0  |  t2  |  t1  |  t3  |
+ *	|      |      |      |      | size |dth   |      |      |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  8   | skip |depth |  x   |horiz | left |right |  x   |  y   |
+ *	|      |      |      |      |      | rec. | rec. | rec. |phase |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Horizontal interpolation record:
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| cell |bitmap| mask |cells/|init- |init- | epos | tpos | eneg | tneg |
+ *	| size | con. | run  | line |ial t |ial e |      |      |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Left vertical interpolation record:
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	|  t   |  e   | epos | tpos | eneg | tneg |      |      |      |      |
+ *	|      |      |      |      |      |      |      |      |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Right vertical interpolation record:
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	|  t   |  e   | epos | tpos | eneg | tneg |      |      |      |      |
+ *	|      |      |      |      |      |      |      |      |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Author:	J A Hall
+ *	Date:	17 Mar 87
+ */
+
+segment	graduate_rel;
+
+listing	!s;
+include	'death.h';			/* Image death handling */
+include	'list.h';			/* Priority/image list */
+include	'math.h';			/* Arithmetic support */
+include	'misc.h';			/* Miscellaneous routines */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+include	'phase.h';			/* Initial pattern/tint phase calc. */
+listing	s;
+
+entry	in_grad_tint, out_grad_tint;
+
+eject;
+/*
+ *	IN_GRAD_TINT
+ *
+ *	- Inputs a graduated tint record.  See subroutine calc_params for
+ *	variable description.  Not a subroutine.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r7 r8 r9
+ *
+ *	usage:
+ *		r0	cell size
+ *		r11	breadth
+ *		r12	cell size - 1
+ *		r13	cell size - 1
+ *		Q	x
+ *
+ *	changed:
+ *		r0 r1 r11 r12 r13 Q L M
+ */
+in_grad_tint:
+	M<>->L<>;				/* Copy depth */
+
+	M<>->Q;					/* Fetch x, add offset */
+	add AQ r15 rX QREG, Y->L<>;
+
+	jsb get_rec;				/* Get horizontal rec */
+	r0 -> r11, jsb get_rec;			/* Get left vertical rec */
+	r0 -> r12, jsb get_rec;			/* Get right vertical rec */
+
+	GT_HORIZ_REC E->D, add DA r5, Y->L;
+	r11 ->L<>;				/* Link horizontal rec */
+	r12 ->L<>;				/* Link left vertical rec */
+	r0 ->L<>;				/* Link right vertical rec */
+
+	r11 ->L;				/* Set horizontal rec */
+	M<>->L<>, D-> r12;			/* Copy cell size */
+	M<>-> r11;				/* Fetch breadth */
+
+	add1 ZA r12 r0 RAMF;			/* Compute horiz. remainder */
+	0-> r1, jsb div32;			/* in first cell */
+	add AB r1 r11 QREG;			/* + breadth */
+	add AQ r12 rX QREG;			/* + cell size - 1 */
+
+	r12 -> r13;				/* Copy cell size - 1 */
+
+	h'c000' E->D, and DA r11 r1 RAMF;	/* Make and save bitmap */
+	add AB r12 r12 RAMU, shift <0;		/* control word */
+	add AB r12 r12 RAMU, shift <0;
+	or AB r12 r1, Y->L<>;
+
+	h'c000' E->D, or DA r11, Y->L<>;	/* Save masking run */
+
+	0-> r1, jsb div32;			/* Compute and save horiz. */
+	Q->L<>;					/* cell count */
+
+	add AB r3 r10 QREG, I->M;		/* Compute vertical remainder */
+	addMc ZA r2 r1 RAMF, jsb div32;		/* in first cell */
+
+	GT_DEPTH E->D, add DA r5, Y->L;
+	L<>->D, add DA r1 rX QREG;		/* ... and add to depth */
+
+	decQ;					/* Compute vertical cell */
+	0-> r1, jsb div32;			/* count - 1 */
+	Q-> r0;
+
+	GT_LEFT_REC E->D, add DA r5, Y->L;
+	L<>->L;					/* Set left vertical rec */
+
+	M<>->L<>, D-> r12;			/* Copy left vertical tf */
+	M<>->D, subs DA r12 rX QREG, jsb calc_params;	/* Compute left dt */
+
+	GT_RIGHT_REC E->D, add DA r5, Y->L;
+	L<>->L;					/* Set right vertical rec */
+
+	M<>->L<>, D-> r12;			/* Copy vertical tf */
+	M<>->D, subs DA r12 rX QREG, jsb calc_params;	/* Compute right dt */
+
+	GT_LEFT_REC E->D, add DA r5, Y->L;
+	L<>->L;					/* Set left vertical rec */
+	L<>-> r12;				/* Fetch left vertical tf */
+
+	GT_RIGHT_REC E->D, add DA r5, Y->L;
+	L<>->L;					/* Set right vertical rec */
+	L<>->D, subs DA r12 rX QREG;		/* Compute horizontal dt */
+
+	GT_HORIZ_REC E->D, add DA r5, Y->L;
+	L<>-> r0;
+	GT_CELLS/LINE E->D, add DA r0, Y->L;
+	L<>->D, subs1 DZ rX r0 RAMF;		/* Compute horizontal dc */
+	r12 ->L<>, jsb calc_params;		/* Save horizontal t */
+
+	GT_X E->D, add DA r5, Y->L;
+	L<>-> r0;				/* Fetch x */
+	GT_HORIZ_REC E->D, add DA r5, Y->L;
+	L<>->L, jmp tinted;			/* Compute phase words */
+
+eject;
+/*
+ *	CALC_PARAMS
+ *
+ *	- Calculates and stores the Bresenham parameters for graduated tint
+ *	interpolation.  The algorithm is as follows:
+ *
+ *		Variable	Description
+ *
+ *		t		current tint value
+ *		tf		tint value of first cell
+ *		tl		tint value of last cell
+ *		dt		change in tint
+ *		dc		number of cells
+ *		neg		flags when dt is negative
+ *		e		Bresenham error term
+ *		tpos		Value to add to t when e is +ve
+ *		tneg		Value to add to t when e is -ve
+ *		epos		Value to add to e when e is +ve
+ *		epos		Value to add to e when e is -ve
+ *
+ *		if (dt >= 0)
+ *			neg = 0;
+ *		else {
+ *			dt = -dt;
+ *			neg = 1;
+ *		}
+ *		tneg = dt / dc;
+ *		dt = dt % dc;
+ *		tpos = tneg + 1;
+ *		if (neg) {
+ *			tneg = -tneg;
+ *			tpos = -tpos;
+ *		}
+ *		eneg = 2 * dt;
+ *		e = 2 * dt - dc;
+ *		epos = 2 * dt - 2 * dc;
+ *
+ *	Assumes local address latch pointing to parameter e.
+ *
+ *	in:
+ *		r0	dc
+ *		Q	dt
+ *
+ *	in use:
+ *		r2 r3 r4 r6 r7 r8 r9 r10 r15
+ *
+ *	usage:
+ *		r0	dc
+ *		r1	dt eneg
+ *		r11	tpos
+ *		r12	e
+ *		r13	neg
+ *		Q	dt tneg
+ *
+ *	changed:
+ *		r1 r11 r12 r13 Q L
+ */
+calc_params:
+	testQ, cjp In l13;			/* if (dt >= 0)            */
+	0-> r13, jmp l14;			/*	neg = 0;           */
+						/* else {                  */
+l13:	negQ;					/*	dt = -dt;          */
+	1 E-> r13;				/*	neg = 1;           */
+						/* }                       */
+l14:	0-> r1, jsb div32;			/* tneg = dt / dc;         */
+						/* dt = dt % dc;           */
+	add1 ZQ rX r11 RAMF;			/* tpos = tneg + 1;        */
+
+	test r13, cjp Iz l15;			/* if (neg) {              */
+	negQ;					/*	tneg = -tneg;      */
+	neg r11;				/*	tpos = -tpos;      */
+						/* }                       */
+l15:	add AB r1 r1 RAMF;			/* eneg = 2 * dt;          */
+	r1 -> r12;
+	subr AB r0 r12 RAMF, Y->L<>;		/* e = 2 * dt - dc;        */
+	subr AB r0 r12, Y->L<>;			/* epos = 2 * dt - 2 * dc; */
+
+	r11 ->L<>;				/* Save tpos               */
+	r1 ->L<>;				/* Save eneg               */
+	Q->L<>, rtn;				/* Save tneg               */
+
+eject;
+/*
+ *	OUT_GRAD_TINT
+ *
+ *	- Outputs a band of scan-lines for a graduated tint rule.  Not a
+ *	subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	rule depth
+ *		r9	run start address
+ *		r10	masking run
+ *
+ *	changed:
+ *		r0 r1 r2 r8 r9 r10 r11 r12 r13 r14 r15 Q L
+ */
+out_grad_tint:
+	L<>-> r8;				/* Fetch rule depth */
+	L<>-> r9;				/* Fetch run start */
+	L<>-> r11;				/* Fetch horizontal rec */
+
+	GT_BIT_CON E->D, add DA r11, Y->L;
+	L<>-> r0;				/* Fetch bitmap control word */
+	r0 ->IO OBB_BIT_CON, ack;		/* Load bitmap control word */
+
+	L<>-> r10;				/* Fetch masking run */
+
+out_line:
+	dec r8, cjp In remove_grad_tint;	/* Rule finished? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r9 ->IO OBB_RUN_ADDR, ack;		/* Load run address */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run data */
+
+	GR_XPHASE E->D, add DA r5, Y->L;
+	L<>-> r0;				/* Fetch x-phase */
+	L<>->D, or DA r0 r0 RAMF;		/* Combine with y-phase */
+	r0 ->IO OBB_TONE_CON, ack;		/* Load halftone control reg */
+
+	GT_HORIZ_REC E->D, add DA r5, Y->L;
+	L<>-> r0;				/* Fetch horizontal rec */
+
+	GT_CELLS/LINE E->D, add DA r0, Y->L;
+	L<>->Q;					/* Fetch line cell count */
+
+	L<>-> r1;				/* Fetch initial t */
+	L<>-> r2;				/* Fetch initial e */
+	L<>-> r11;				/* Fetch epos */
+	L<>-> r12;				/* Fetch tpos */
+	L<>-> r13;				/* Fetch eneg */
+	L<>-> r14, jmp l5;			/* Fetch tneg */
+
+out_data:
+	r1 cmp r15, cjp Ieq l6;			/* Has tone changed? */
+
+l5:	r1 -> r0, phlc 3;			/* Yes: make new data word */
+	add AB r0 r0 RAMU, shift <0, rfct;
+	or AB r1 r0 RAMF;
+
+l6:	r0 ->IO OBB_TONE_DATA, ack;		/* Load tint data */
+
+	r1 -> r15;				/* Compute next tone ... */
+	test r2, cjp In l7;			/* if (e >= 0) {   */
+	r2 += r11;				/*	e += epos; */
+	r1 += r12, jmp l8;			/*	t += tpos; */
+						/* else {          */
+l7:	r2 += r13;				/*	e += eneg; */
+	r1 += r14;				/*	t += tneg; */
+						/* }               */
+l8:	decQ, cjp Iz/ out_data;			/* Finished line? */
+
+	OBB_RUN_BSY E-> r1;			/* Yes: output dummy words */
+l16:	0->IO OBB_TONE_DATA, ack;		/* until run decoder finished */
+	OBB_STATUS IO-> r0;
+	and AB r0 r1, cjp Iz l16;
+
+	GR_YPHASE E->D, add DA r5, Y->L;
+	L<>-> r0, noinc;
+	dec r0, Y->L<>, cjp In/ l9;		/* Yes: finished cell? */
+
+	GT_HORIZ_REC E->D, add DA r5, Y->L;
+	L<>-> r15, Y->L;			/* Yes: set horizontal rec */
+	L<>-> r11;				/* Fetch cell size */
+
+	GR_XPHASE E->D, add DA r5, Y->L;
+	L<>-> r12, noinc;
+	OBB_ODD_CELL E->D, exor DA r12, Y->L<>;/* Toggle cell type */
+
+	r11 ->L<>;				/* Reload y-phase */
+
+	GT_LEFT_REC E->D, add DA r5, Y->L;
+	L<>-> r14, Y->L, jsb calc_tone;		/* Set left vertical rec */
+
+	r1 -> r12;
+
+	GT_RIGHT_REC E->D, add DA r5, Y->L;
+	L<>-> r14, Y->L, jsb calc_tone;		/* Set right vertical rec */
+
+	GT_CELLS/LINE E->D, add DA r15, Y->L;
+	L<>->D, subs1 DZ rX r0 RAMF;		/* Fetch line cell count */
+	r12 ->L<>;				/* Save t */
+
+	subr AB r12 r1 QREG, jsb calc_params;	/* dt = tl - tf */
+
+l9:	inc r6;					/* Bump line address */
+	r6 cmp r7, cjp Iult out_line;		/* Finished band? */
+
+	GT_DEPTH E->D, add DA r5, Y->L;	
+	r8 ->L<>, jmp image_alive;		/* Yes: save depth */
+
+eject;
+/*
+ *	CALC_TONE
+ *
+ *	- Calculates the next tone value for a vertical record (left or right).
+ *	See subroutine calc_params in read_typ.mal for description of variables.
+ *	Algorithm as follows:
+ *
+ *		if (e >= 0) {
+ *			e += epos;
+ *			t += tpos;
+ *		}
+ *		else {
+ *			e += eneg;
+ *			t += tneg;
+ *		}
+ *		return t;
+ *
+ *	in:
+ *		r14	current vertical rec
+ *
+ *	out:
+ *		r1	new tone value
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	changed:
+ *		r1 r2 L
+ */
+calc_tone:
+	L<>-> r1;				/* Fetch t */
+	L<>-> r2, cjp In/ l10;			/* Fetch e, -ve? */
+	GT_ENEG E->D, add DA r14, Y->L;		/* Yes: */
+
+l10:	L<>->D, add DA r2 r2 RAMF;		/* e += epos/eneg */
+	L<>->D, add DA r1 r1 RAMF;		/* t += tpos/tneg */
+
+	r14 ->L;
+	r1 ->L<>;				/* Save t */
+	r2 ->L<>, rtn;				/* Save e */
+
+	end;

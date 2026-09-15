@@ -1,0 +1,78 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 15 - Partial I/O bus test.
+ *
+ *	PASS-	Write zero in control word (locn 0), and interrupt.
+ *	FAIL-	Write register values to the following locns and interrupt:
+ *			0	Control word, value non-zero.
+ *			1	Data written, bits 3-0.
+ *			2	Data read, bits 3-0.
+ *
+ *	- Write patterns through the bottom 4-bits of the I/O bus and
+ *	read them back.  Then compare what was written with what was 
+ *	read and write non-zero control word if comparison failed.  Write
+ *	zero control word if it passed.  Finally, generate interrupt.
+ *
+ *	Author:	J A Hall
+ *	Date:	5 Dec 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 15, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	15;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	h'0000' E-> r0;			/* Load registers */
+	h'000F' E-> r1;
+	h'000A' E-> r2;
+	h'0005' E-> r3;
+
+	r0 ->IOTEST-> r4;		/* Write values through I/O bus */
+	r1 ->IOTEST-> r5;
+	r2 ->IOTEST-> r6;
+	r3 ->IOTEST-> r7;
+
+	r0 cmp r4, cjp Ieq l1;		/* Test the values received */
+	r0 -> r3;
+	r4 -> r7, jmp fail;
+l1:	r1 cmp r5, cjp Ieq l2;
+	r1 -> r3;
+	r5 -> r7, jmp fail;
+l2:	r2 cmp r6, cjp Ieq l3;
+	r2 -> r3;
+	r6 -> r7, jmp fail;
+l3:	r3 cmp r7, cjp Ine fail;
+
+	TEST_LED E-> r14;		/* Test passed */
+	0-> r0, jmp finish;
+
+fail:	ERR_LED E-> r14;		/* Test failed, value mismatch */
+	1 E-> r0;	
+
+finish:	0->Y, Y->MCL;
+	r0 ->M<>;			/* Write control word */
+	r3 ->M<>;			/* Data written */
+	r4 ->M<>;			/* Data read */
+
+	L_INTR E-> r15;			/* Generate interrupt */
+	r15 ->LED;	
+	r14 ->LED;			/* Clear interrupt */
+
+	/* Loop displaying register values so as to aid debugging */
+disp:	r4 ->Y;				/* Pattern 0 */
+	r5 ->Y;				/* Pattern F */
+	r6 ->Y;				/* Pattern A */
+	r7 ->Y, jmp disp;		/* Pattern 5 */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

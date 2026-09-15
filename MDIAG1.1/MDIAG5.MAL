@@ -1,0 +1,138 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 5 - Conditional sequencer (AM2910).
+ *
+ *	PASS-	Interrupt.
+ *	FAIL-	Loop.
+ *
+ *	- Test the following AM2910 instructions:
+ *		cjp
+ *		phlc
+ *		rfct
+ *		jsrp
+ *		ldct
+ *		jrp
+ *		rpct
+ *		loop
+ *		twb
+ *
+ *	Author:	J A Hall
+ *	Date:	26 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 5, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	5;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	TEST_LED E-> r0;		/* Show test number */
+	r0 ->LED;
+
+	/* cjp (3) --	If test passes takes PL else continue
+	 */
+	0->Y, cjp Iz l1;
+
+	jmp fail;			/* cjp didn't take PL */
+
+	/* phlc (4) --	Push next address an stack and load counter
+	 * rfct (8) --	If counter != 0 decrement and use stack address else
+	 *		pop stack and continue
+	 */
+l1:	4 E-> r0;
+	phlc 3;				/* Load 3 to loop 4 times! */
+	dec r0;
+	rfct;
+	test r0, cjp Iz l2;
+
+	jmp fail;			/* rfct didn't count down */
+
+	/* jsrp (5) --	Push return address and take PL if test passes else 
+	 *		register
+	 * ldct (C) --	Load register/counter
+	 */
+l2:	ldct l3;
+	test r0, jsrp Iz sub;
+	test r0, cjp Iz/ l4;
+
+	jmp fail;			/* jsrp didn't take register or PL */
+
+l3:	jmp fail;			/* jsrp took register instead of PL */
+
+sub:	inc r0, rtn;			/* Test subroutine */
+
+	/* jrp (7) --	As jsrp except no push
+	 */
+l4:	ldct l5;
+	test r0, jrp Iz/ l6;
+
+	jmp fail;			/* jrp didn't take register or PL */
+
+l5:	jmp fail;			/* jrp took register instead of PL */
+
+	/* rpct (9) --	 As rfct except address from PL
+	 */
+l6:	4 E-> r0;
+	ldct 3;				/* Load 3 to loop 4 times! */
+l7:	dec r0;
+	rpct l7;
+	test r0, cjp Iz l8;
+
+	jmp fail;			/* rpct didn't count down */
+
+	/* loop (D) --	If test passes pop stack and continue else takes stack
+	 */
+l8:	4 E-> r0;
+	r0 -> r1;
+	push;
+	dec r1;
+	dec r0, loop Iz;
+	test r1, cjp Iz l9;
+
+	jmp fail;			/* loop didn't count down */
+
+	/* twb (F) --	If test fails decrement counter and take stack else the
+	 *		pop stack continue.  If the count reaches 0 the PL is
+	 *		taken
+	 */
+l9:	4 E-> r0;
+	r0 -> r1;
+	phlc 4;				/* Load 4 to loop 5 times! */
+	dec r1;
+	dec r0, twb Iz l10;
+	test r1, cjp Iz l11;
+
+	jmp fail;			/* twb didn't loop */
+
+l10:	jmp fail;			/* twb took PL */
+
+l11:	0-> r0;
+	phlc 2;				/* Load 2 to loop 3 times! */
+	test r0, twb Iz/ pass;
+
+					/* twb didn't take PL */
+fail:	ERR_LED E-> r0;			/* Test failed */
+	r0 ->LED;
+	jmp '$';
+
+pass:	L_INTR E-> r0;			/* Test passed, generate interrupt */
+	r0 ->LED;
+	TEST_LED E-> r0;		/* Clear interrupt */
+	r0 ->LED;
+	jmp '$';			/* Loop forever */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;
+
+
+
+

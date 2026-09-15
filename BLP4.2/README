@@ -1,0 +1,8 @@
+BLP version 4.2
+---------------
+
+Based on version 4.1.
+
+The line end problems in bitmaps, half-tones, graduated tints, tinted rules,
+and tiles has been solved by outputting dummy words to the bitmap or halftone
+decoder until the run decoder becomes ready.

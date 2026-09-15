@@ -1,0 +1,102 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Initial pattern/tint phase calculation.
+ *
+ *	Author:	J A Hall
+ *	Date:	17 Mar 87
+ */
+
+segment	phase_rel;
+
+listing	!s;
+include	'list.h';			/* Priority/image list */
+include	'math.h';			/* Arithmetic support */
+include 'obb.h';			/* OBB register definitions */
+include	'in_list.h';			/* Addition list */
+listing	s;
+
+entry	calc_phase, tinted;
+
+eject;
+/*
+ *	CALC_PHASE
+ *
+ *	- Calculates horizontal and vertical pattern/tint phase for image.
+ *
+ *	in:
+ *		r0	x-posn of image
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r10	image skip count
+ *
+ *	in use:
+ *		r4 r6 r8 r9 r14 r15
+ *
+ *	changed:
+ *		r0 r1 r11 Q L
+ */
+calc_phase:
+	PR_PAT_TYPE E->D, add DA r7, Y->L;	/* Get pattern type */
+	L<>-> r1, cjp Iz next_rec;		/* Image patterned/tinted? */
+
+	6 E-> r11;				/* Yes: is it a tint? */
+	r1 cmp r11, cjp Iugt tinted;
+
+	0-> r1;					/* No: compute/save x-phase */
+	r0 ->Q;
+	PR_PAT_A+B E->D, add DA r7, Y->L;
+	L<>-> r0, jsb div32;
+	GR_XPHASE E->D, add DA r5, Y->L;
+	r1 ->L<>;
+
+	add AB r3 r10 QREG, I->M;		/* Compute and save y-phase */
+	addMc ZA r2 r1 RAMF, jsb div32;
+	r1 ->L<>, jmp next_rec;
+
+tinted:	L<>->D, add1 DZ rX r11 RAMF;		/* Fetch cell size */
+
+	0-> r1;					/* Compute x-phase */
+	r0 ->Q;
+	or ZA r11 r0 RAMU, shift <0, jsb div32;
+
+	'OBB_TINT + OBB_TONE_MAGIC' E-> r13;	/* Set tone control bits */
+
+	r1 cmp r11, cjp Iult l7;		/* Even horizontal cell type? */
+
+	subr AB r11 r1 RAMF;			/* No: compute phase */
+	OBB_ODD_CELL E->D, or DA r13 r13 RAMF;	/* Set odd cell */
+
+l7:	add AB r1 r1 RAMU, shift <0, phlc 2;	/* Shift up by 8 */
+	add AB r1 r1 RAMU, shift <0, rfct;
+	add AB r1 r13 RAMF;			/* Add bits */
+
+	add AB r3 r10 QREG, I->M;		/* Compute y-phase */
+	addMc ZA r2 r1 RAMF, jsb div32;
+
+	r1 cmp r11, cjp Iult l8;		/* Even vertical cell type? */
+
+	subs1 AB r0 r1 RAMF;			/* No: compute and rev. phase */
+	OBB_ODD_CELL E->D, or DA r1 r1 RAMF;	/* Set odd cell */
+	jmp l9;
+
+l8:	subs1 AB r11 r1 RAMF;			/* Reverse the phase */
+
+l9:	3 E-> r0;
+	GR_TYPE E->D, add DA r5, Y->L;
+	L<>->D, subr DA r0, cjp Ine l10;	/* Is it a shape record? */
+
+	GR_XPHASE E->D, add DA r5, Y->L;
+	r13 ->L<>;				/* Yes: save x-phase */
+	r1 ->L<>, jmp next_rec;			/* Save y-phase */
+
+l10:	OBB_ODD_CELL E->D, and DA r1 r12 RAMF;	/* Extract vertical cell type */
+	OBB_PHASE_MASK E->D, and DA r1 r1 RAMF;	/* Make y-phase */
+
+	GR_XPHASE E->D, add DA r5, Y->L;
+	exor AB r13 r12, Y->L<>;		/* Yes: save x-phase */
+	r1 ->L<>, jmp next_rec;			/* Save y-phase */
+
+	end;

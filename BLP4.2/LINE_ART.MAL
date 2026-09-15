@@ -1,0 +1,242 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Line art picture image support.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4      5      6
+ *	+------------------------------------------------+
+ *	|  5   | skip |image | pcb  |  x   |      |      |
+ *	|      |      |blkno | ptr  |      |      |      |
+ *	+------------------------------------------------+
+ *
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  5   | skip |    data     | pcb  |  x   |repeat|  x   |  y   |
+ *	|      |      |      |   address   | ptr  |      |      |phase |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Author:	J A Hall
+ *	Date:	17 Mar 87
+ */
+
+segment	line_art_rel;
+
+listing	!s;
+include	'addr.h';			/* Image block number conversion */
+include	'death.h';			/* Image death handling */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'math.h';			/* Arithmetic support */
+include 'pattern.h';			/* Patterning support */
+include	'phase.h';			/* Initial pattern/tint phase calc. */
+include	'picture.h';			/* Picture support */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+listing	s;
+
+entry	in_line_art, out_line_art, pat_line_art;
+
+eject;
+/*
+ *	IN_LINE_ART
+ *
+ *	- Inputs line art record.  Not a subroutine.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r8 r9
+ *
+ *	changed:
+ *		L M
+ */
+in_line_art:
+	jsb in_pic_start;			/* Read start of record */
+
+	0->L<>;					/* Clear repeat */
+	M<>->Y;					/* Discard filler */
+	M<>->Y, jmp calc_phase;			/* Discard fill, calc. phase */
+
+eject;
+/*
+ *	OUT_LINE_ART
+ *
+ *	- Outputs a band of scan-lines for a line art picture.  Not a
+ *	subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	x-posn
+ *		r9	repeat count
+ *		r10	end of line constant
+ *		r11	picture control block pointer
+ *
+ *	changed:
+ *		r0 r6 r8 r9 r10 r11 L M
+ */
+out_line_art:
+	L<>->MH;				/* Load image data address */
+	L<>->ML;
+	L<>-> r11;				/* Fetch pcb pointer */
+	L<>-> r8;				/* Fetch x-posn */
+	L<>-> r9;				/* Fetch repeat count */
+
+	h'8000' E-> r10;			/* Load end-of-line constant */
+	0->IO OBB_BIT_CON, ack;			/* Clear high order run bits */
+
+out_line:
+	test r9, cjp Iz l2;			/* In repeated line? */
+
+out_rpt:
+	CR_REPEAT E->D, add DA r5, Y->L;
+
+	r9 cmp r7, cjp Iult l1;			/* Yes: end rpt in this band? */
+
+	subr AB r7 r9 RAMF;			/* No: sub lines remaining */
+	add AB r6 r9, Y->L<>, jmp image_alive;
+
+l1:	r9 -> r6;				/* Yes: set line address */
+	0-> r9, Y->L<>;				/* Clear and save repeat */
+
+l2:	M<>-> r0, cjs_Blkno chain_pic;		/* Read data word */
+	test r0, cjp Iz/ l3;			/* Line starts with 0 run? */
+
+	M<>-> r0, cjs_Blkno chain_pic;		/* Yes: read data word */
+	test r0, cjp Iz remove_picture;		/* End of image? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* No: save next run address */
+	ML->L<>;
+
+	r0 -> r9, jmp out_rpt;
+
+l3:	r0 cmp r10, cjp Ieq out_eol;		/* Blank line? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* No: load line address */
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+
+out_run:
+	r0 ->IO OBB_RUN_DATA, ack;		/* Load run */
+
+	M<>-> r0, cjs_Blkno chain_pic;		/* Read run */
+	r0 cmp r10, cjp Ine out_run;		/* End of line? */
+
+out_eol:
+	inc r6;					/* Bump line address */
+	r6 cmp r7, cjp Ine out_line;		/* Finished band? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes: save new line address */
+	ML->L<>, jmp image_alive;
+
+eject;
+/*
+ *	PAT_LINE_ART
+ *
+ *	- Outputs a band of scan-lines for a patterned line art picture.
+ *	Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	x-posn
+ *		r9	repeat count
+ *		r10	end of line constant
+ *		r11	picture control block pointer
+ *
+ *	changed:
+ *		r0 r6 r8 r9 r10 r11 L M
+ */
+pat_line_art:
+	L<>->MH;				/* Load image data address */
+	L<>->ML;
+	L<>-> r11;				/* Fetch pcb pointer */
+	L<>-> r8;				/* Fetch x-posn */
+	L<>-> r9;				/* Fetch repeat count */
+
+	h'8000' E-> r10;			/* Load end-of-line constant */
+	0->IO OBB_BIT_CON, ack;			/* Clear high order run bits */
+
+pat_line:
+	test r9, cjp Iz l7;			/* In repeated line? */
+
+pat_rpt:
+	CR_REPEAT E->D, add DA r5, Y->L;
+
+	r9 cmp r7, cjp Iult l6;			/* Yes: end rpt in this band? */
+
+	subr AB r7 r9, Y->L<>, jmp image_alive;	/* No: decrement and save rpt */
+
+l6:	r9 -> r6;				/* Yes: set line address */
+	0-> r9, Y->L<>;				/* Clear and save repeat */
+
+	line_no E->L;				/* Recompute y-phase */
+	L<>-> r1;
+	L<>->D, add DA r6 rX QREG;
+	PR_PAT_A+B E->D, add DA r3, Y->L;
+	L<>-> r0, jsb div32;
+
+	GR_YPHASE E->D, add DA r5, Y->L;	/* and save it */
+	r1 ->L<>;
+
+l7:	M<>-> r0, cjs_Blkno chain_pic;		/* Read data word */
+	test r0, cjp Iz/ l8;			/* Line starts with 0 run? */
+
+	M<>-> r0, cjs_Blkno chain_pic;		/* Yes: read data word */
+	test r0, cjp Iz remove_picture;		/* End of image? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* No: save next run address */
+	ML->L<>;
+
+	r0 -> r9, jmp pat_rpt;
+
+l8:	r0 cmp r10, cjp Ieq pat_eol;		/* Blank line? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* No: load line address */
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+
+	jsb calc_pat;				/* Compute pattern */
+
+pat_run:
+	test r1, cjp Iz/ l14;			/* Output this run? */
+
+	r0 ->IO OBB_RUN_DATA, ack;		/* Yes: load run */
+
+l14:	M<>-> r0, cjs_Blkno chain_pic;		/* No: read run */
+	r0 cmp r10, cjp Ine pat_run;		/* End of line? */
+
+pat_eol:
+	inc r6, jsb inc_pat;			/* Bump addr, increment phase */
+	r6 cmp r7, cjp Ine pat_line;		/* Finished band? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes: save new line address */
+	ML->L<>, jmp image_alive;
+
+	end;

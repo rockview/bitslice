@@ -1,0 +1,130 @@
+#
+#	Makefile for BLP microprogram.  Use Zortec make.  Version %I%.
+#	
+#	Author:	J A Hall
+#	Date:	8 Feb 87
+#
+#	Macros
+#	------
+DEF_MAC =	..\def\obp
+DEF_DEP =	..\def\obp.def
+BACKUP =	a:blp4.2
+PRINTER =	lpt3:
+SUN =		marvin
+S3 =		vulcan
+
+OBS =		main.ob loc.ob boot.ob comms.ob job.ob misc.ob!
+		math.ob in_list.ob addr.ob phase.ob pattern.ob!
+		out_band.ob death.ob char.ob rule.ob shape.ob!
+		scan.ob line_art.ob picture.ob graduate.ob tile.ob
+
+LIST1 =		main.lis loc.lis boot.lis comms.lis job.lis misc.lis!
+		math.lis in_list.lis addr.lis phase.lis pattern.lis
+LIST2 =		out_band.lis death.lis char.lis rule.lis shape.lis!
+		scan.lis line_art.lis picture.lis graduate.lis
+LIST3 =		list.h obb.h loc.h main.h scan_impl.h tile.lis
+
+#
+#	Inference rules
+#	---------------
+.mal.ob :
+	ma -d $(DEF_MAC) $* -le
+
+#
+#	Make the program
+#	----------------
+blp:		blp.xxa
+
+#
+#	Make relocatable files
+#	----------------------
+$(OBS) :	$(DEF_DEP)
+
+#
+#	Make absolute file
+#	------------------
+blp.abs :	blp.ml $(OBS)
+		ml -d $(DEF_MAC) blp -lt
+
+#
+#	Make hex file
+#	-------------
+blp.obj :	blp.abs
+		mf -d $(DEF_MAC) -ho blp -l^s
+
+#
+#	Make binary length file
+#	-----------------------
+blp.xxb :	blp.obj
+		len blp
+
+#
+#	Make ASCII length file
+#	----------------------
+blp.xxa :	blp.obj
+		len -a blp
+
+#
+#	Install variable length on series 3
+#	-----------------------------------
+instxx :	blp.xxb
+		rcp blp.xxb $(SUN):/tmp/blp.xxb
+		rsh $(SUN) /usr/local/bin/mmput -v $(S3) /tmp/blp.xxb 3.1/mcode/blp; !
+		rm /tmp/blp.xxb
+
+#
+#	Make and install fixed length on series3
+#	----------------------------------------
+inst10 :	blp.obj
+		len -f blp
+		rcp blp.10b $(SUN):/tmp/blp.10b
+		rsh $(SUN) /usr/local/bin/mmput -v $(S3) /tmp/blp.10b 3.1/mcode/blp; !
+		rm /tmp/blp.10b
+
+#
+#	Make disk backup
+#	----------------
+backup :
+		copy *.mal $(BACKUP)
+		copy *.h $(BACKUP)
+		copy blp.ml $(BACKUP)
+		copy makefile $(BACKUP)
+		copy readme $(BACKUP)
+
+#
+#	Restore from disk
+#	-----------------
+restore :
+		copy $(BACKUP)\*.mal
+		copy $(BACKUP)\*.h
+		copy $(BACKUP)\blp.ml
+		copy $(BACKUP)\makefile
+		copy $(BACKUP)\readme
+
+#
+#	Tidy up directory
+#	-----------------
+tidy :
+		del *.mal
+		del *.h
+		del blp.ml
+		mv blp.lis blp.bak
+		del *.lis
+		mv blp.bak blp.lis
+		del *.ob
+		del *.obj
+		del *.abs
+
+#
+#	Error check
+#	-----------
+check :
+		grep warnings *.lis
+
+#
+#	Print listing
+#	-------------
+print :
+		net print $(LIST1) $(PRINTER)
+		net print $(LIST2) $(PRINTER)
+		net print $(LIST3) $(PRINTER)

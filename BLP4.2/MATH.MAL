@@ -1,0 +1,134 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Arithmetic support.
+ *
+ *	Author:	J A Hall
+ *	Date:	14 Mar 87
+ */
+
+segment	math_rel;
+
+entry	div32, div64, umult, smult;
+
+eject;
+/*
+ *	DIV32
+ *
+ *	- Unsigned restoring 32 bit by 16 bit divide.
+ *
+ *	in:
+ *		r0	divisor
+ *		r1	dividend (hi)
+ *		Q	dividend (lo)
+ *
+ *	out:
+ *		r1	remainder
+ *		Q	quotient
+ *
+ *	changed:
+ *		r1 Q
+ */
+div32:	0->Y, I->M;				/* Set Mz bit in MSR */
+
+	or ZA r1 r1 RAMQU, shift <<0, phlc 15;	/* Make the first shift */
+
+	r0 cmp r1, cjp Iugt l1;			/* Divisor <= dividend hi */
+
+	/* Division went so generate quotient bit of 1.  Make test fail */
+	subr AB r0 r1 RAMQU, shift <<1, twb Mz/ l2;
+
+	/* Didn't go so restore and gen quotient bit of 0.  Make test fail */
+l1:	or ZA r1 r1 RAMQU, shift <<0, twb Mz/ l2;
+
+l2:	or ZA r1 r1 RAMD, shift 0>, rtn;	/* Shift remainder down */
+
+eject;
+/*
+ *	DIV64
+ *
+ *	- Unsigned restoring 64 bit by 32 bit divide.
+ *
+ *	in:
+ *		r0	divisor (hi)
+ *		r1	divisor (lo)
+ *		r2	dividend ms (hi)
+ *		r3	dividend ms (lo)
+ *		r4	dividend ls (hi)
+ *		Q	dividend ls (lo)
+ *
+ *	out:
+ *		r2	remainder (hi)
+ *		r3	remainder (lo)
+ *		r4	quotient (hi)
+ *		Q	quotient (lo)
+ *
+ *	changed:
+ *		r2 r3 r4 Q
+ */
+div64:	or ZA r4 r4 RAMQU, shift Mc<<0;		/* Make the first shift */
+	or ZA r3 r3 RAMU, shift Mc<Mc;
+	or ZA r2 r2 RAMU, shift <Mc, phlc 31;
+
+	r0 cmp r2, cjp Iugt l4;			/* Divisor <= ms dividend? */
+	r0 cmp r2, cjp Iult l5;
+	r1 cmp r3, cjp Iugt l4;
+
+l5:	subr AB r1 r3 RAMF, Ic/->M;		/* Yes: subtract from it */
+	subrMc AB r0 r2 RAMF;
+	or ZA r4 r4 RAMQU, shift Mc<<1, jmp l3;	/* and shift in 1 */
+
+l4:	or ZA r4 r4 RAMQU, shift Mc<<0;		/* Shift in 0 */
+
+l3:	or ZA r3 r3 RAMU, shift Mc<Mc;		/* Finish shifting dividend */
+	or ZA r2 r2 RAMU, shift <Mc, rfct;
+
+	or ZA r2 r2 RAMD, shift 0>Mc;		/* Shift remainder down */
+	or ZA r3 r3 RAMD, shift Mc>Mc, rtn;
+
+eject;
+/*
+ *	UMULT
+ *
+ *	- Unsigned 16-bit multiply.
+ *
+ *	in:
+ *		r0	multiplier
+ *		r1	multiplicand
+ *
+ *	out:
+ *		r0	product (hi)
+ *		r1	product (lo)
+ *
+ *	changed:
+ *		r0 r1 Q
+ */
+umult:	r0 ->Q;
+	0-> r0, phlc 15;
+	add AB r1 r0 RAMQD, shift Ic>>, mult, rfct;
+	Q-> r1, rtn;
+
+eject;
+/*
+ *	SMULT
+ *
+ *	- Signed 16-bit multiply.
+ *
+ *	in:
+ *		r0	multiplier
+ *		r1	multiplicand
+ *
+ *	out:
+ *		r0	product (hi)
+ *		r1	product (lo)
+ *
+ *	changed:
+ *		r0 r1 Q
+ */
+smult:	r0 ->Q;
+	0-> r0, phlc 14;
+	add AB r1 r0 RAMQD, shift In^Iovr>>, mult, rfct;
+	subr AB r1 r0 RAMQD, shift In^Iovr>>, mult;
+	Q-> r1, rtn;
+
+	end;

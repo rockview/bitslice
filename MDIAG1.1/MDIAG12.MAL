@@ -1,0 +1,50 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 12 - Status register interrupt.
+ *
+ *	PASS-	Write zero in control word (locn 0).
+ *	FAIL-	Write non-zero in control word (locn 0).
+ *
+ *	- Generates interrupt, read status register and check that interrupt
+ *	is present.  Clear interrupt and write control word.
+ *
+ *	Author:	J A Hall
+ *	Date:	28 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 12, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	12;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	L_INTR E-> r15;			/* Generate interrupt */
+	r15 ->LED;
+
+	S_INTR E-> r1;			/* Read status */
+	STAT-> r0;
+	notrs AB r0 r1, cjp Iz fail;
+
+	TEST_LED E-> r14;
+	0-> r0, jmp finish;
+
+fail:	ERR_LED E-> r14;		/* Test failed, interrupt not present */
+	1 E-> r0;
+
+finish:	r14 ->LED;			/* Clear interrupt */
+	0->Y, Y->MCL;			/* Write control word */
+	r0 ->M<>;
+
+	jmp '$';			/* Loop forever */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

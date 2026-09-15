@@ -1,0 +1,72 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 14 - Status register TF interrupt.
+ *
+ *	PASS-	Write zero in control word (locn 0).
+ *	FAIL-	Loop if interrupt never detected or write non-zero in control
+ *		word (locn 0) if interrupt detected but couldn't be reset.
+ *
+ *	- This test is complicated by the fact that it passes through
+ *	location zero twice.  The first time will be as a result of a program
+ *	boot.  This condition is detected and control is transferred to
+ *	a loop which waits for the TF interrupt to arrive.  When this
+ *	occurs control passes through location zero again.  This time
+ *	the boot/TF interrupt bit will indicate TF interrupt if the hardware
+ *	is functioning correctly, if it doesn't control simply transfers
+ *	to the loop again and this condition can be detected as a timeout.
+ *	If the interrupt is detected it is cleared and re-read.  If the
+ *	clear didn't work a non-zero value is written to the control
+ *	word else zero is written to the control word.  Finally, an interrupt
+ *	generated.
+ *
+ *	Author:	J A Hall
+ *	Date:	1 Dec 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 14, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	14;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	S_BOOT/TF E-> r1;		/* Read and test status register */
+	STAT-> r0;
+	and AB r0 r1, cjp Iz/ boot;
+
+	L_RESET E-> r0;			/* TF interrupt present, clear it */
+	r0 ->LED;
+
+	STAT-> r0;			/* Read and test status register */
+	and AB r0 r1, cjp Iz fail;
+
+	TEST_LED E-> r14;		/* Test passed */
+	0-> r0, jmp finish;
+
+fail:	ERR_LED E-> r14;		/* Test failed, can't reset TF int */
+	1 E-> r0;
+
+finish:	0->Y, Y->MCL;			/* Write control word */
+	r0 ->M<>;
+
+	L_INTR E-> r15;			/* Generate interrupt */
+	r15 ->LED;	
+	r14 ->LED;			/* Clear interrupt */
+
+	jmp '$';			/* Loop forever */
+
+boot:	ERR_LED E-> r0;			/* Show error */
+	r0 ->LED;
+
+	jmp '$';			/* Wait for interrupt */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

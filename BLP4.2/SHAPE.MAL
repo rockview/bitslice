@@ -1,0 +1,820 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Shape image support.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4
+ *	+-------------------------------//--------------//---+
+ *	|  3   | skip |depth | left |  left  |right | right  |
+ *	|      |      |      | type |  data  | type |  data  |
+ *	+-------------------------------//--------------//---+
+ *
+ *		Vertical edge type:
+ *	         0
+ *		+------+
+ *		|  x   |
+ *		|      |
+ *		+------+
+ *
+ *		Diagonal edge type:
+ *	         0      1
+ *		+-------------+
+ *		|  x   |  x   |
+ *		| top  |bottom|
+ *		+-------------+
+ *
+ *		Elliptical edge type:
+ *	         0      1      2      3
+ *		+---------------------------+
+ *		|centre|  y   |  a   |  b   |
+ *		|  x   |      |      |      |
+ *		+---------------------------+
+ *
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  3   | skip |depth | left | left |right |right |  x   |  y   |
+ *	|      |      |      |      | type | edge | type |edge  |phase |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Vertical edge record (type 0):
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	|  x   |      |      |      |      |      |      |      |      |      |
+ *	|      |      |      |      |      |      |      |      |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Diagonal edge record (type 1):
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	|  x   |      e      |    epos     | xpos |    eneg     | xneg |      |
+ *	|      |             |             |      |             |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Elliptical edge record (type 2):
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	|  x   |  y   |  b   | last |  a   |      |      |      |      |      |
+ *	|      |      |      | root |      |      |      |      |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Author:	J A Hall
+ *	Date:	12 Apr 87
+ */
+
+segment	shape_rel;
+
+listing	!s;
+include	'comms.h';			/* OBP/GPP communications */
+include	'death.h';			/* Image death handling */
+include	'in_list.h';			/* Addition list */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+include	'math.h';			/* Arithmetic support */
+include	'misc.h';			/* Miscellaneous routines */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+include	'pattern.h';			/* Patterning support */
+include	'phase.h';			/* Initial pattern/tint phase calc. */
+listing	s;
+
+entry	in_shape, out_shape, pat_shape, tint_shape;
+
+eject;
+/*
+ *	IN_SHAPE
+ *
+ *	- Inputs a shape record.  Not a subroutine.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r7 r8 r9
+ *
+ *	changed:
+ *		r0 r11 L M
+ */
+in_shape:
+	M<>->L<>, D-> r11;			/* Copy shape depth */
+
+	SR_LEFT_TYPE E->D, add DA r5 r12 RAMF;	/* No: read left edge */
+	jsb in_edge;
+	test r12, cjp Iz rec_error;		/* Any errors? */
+
+	SR_RIGHT_TYPE E->D, add DA r5 r12 RAMF;	/* No: read right edge */
+	jsb in_edge;
+	test r12, cjp Iz/ calc_phase;		/* Any errors? */
+
+	SR_LEFT_REC E->D, add DA r5, Y->L;	/* Yes: remove left record */
+	L<>-> r0, jsb put_rec;
+	jmp rec_error;
+
+eject;
+/*
+ *	IN_EDGE
+ *
+ *	- Inputs edge record.
+ *
+ *	in:
+ *		r5	current image list record
+ *		r11	shape depth
+ *		r12	pointer to record edge type
+ *		r15	forward/reverse reading offset
+ *
+ *	out:
+ *		r12	pointer to edge record (NULL if error)
+ *
+ *	in use:
+ *		r2 r3 r4 r6 r7 r8 r9 r10
+ *
+ *	changed:
+ *		r1 r12 r14 L M
+ */
+in_edge:
+	jsb get_rec;				/* Get new record */
+	r12 ->L;
+	M<>->L<>, D-> r1;			/* Copy edge type */
+	r0 -> r12, Y->L<>, Y->L;		/* Link record */
+
+	test r1, cjp Iz in_vert;		/* Vertical edge? */
+	dec r1, cjp Iz in_diag;			/* Diagonal edge? */
+	dec r1, cjp Iz in_ellipse;		/* Elliptical edge? */
+
+	W_BAD_EDGE_TYPE E-> r14;		/* No: bad edge record type */
+	jsb send_warning;
+	jsb put_rec;				/* Put record back */
+	0-> r12, rtn;				/* Return error */
+
+eject;
+/*
+ *	IN_VERT
+ *
+ *	- Inputs a vertical edge record.  Not a subroutine.
+ *
+ *	in:
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12
+ *
+ *	changed:
+ *		r0 L M
+ */
+in_vert:
+	M<>-> r0;				/* Fetch x-posn, add offset */
+	add AB r15 r0, Y->L<>, rtn;
+	
+eject;
+/*
+ *	IN_DIAG
+ *
+ *	- Inputs a diagonal edge record.  Line interpolation uses a modified
+ *	Bresenham algorithm.  The diagonal edge record contains values that
+ *	are used to generate a new x-value for each scan-line.  These values
+ *	are computed as shown in the following code segment:
+ *
+ *		Variable	Description
+ *
+ *		xtop		x-value on the starting scan-line
+ *		xbot		x-value on the finishing scan-line
+ *		dx		change in x
+ *		dy		number of scan-lines (depth)
+ *		neg		flags when dx is negative
+ *		x		current x-value
+ *		e		Bresenham error term (32-bit)
+ *		xpos		value used to increment x when e is +ve (16-bit)
+ *		xneg		value used to increment x when e is -ve (16-bit)
+ *		epos		value used to increment e when e is +ve (32-bit)
+ *		eneg		value used to increment e when e is -ve (32-bit)
+ *
+ *		x = xtop;
+ *		dx = xbot - xtop;
+ *		if (dx >= 0)
+ *			neg = 0;
+ *		else {
+ *			dx = -dx;
+ *			neg = 1;
+ *		}
+ *		xneg = dx / dy;
+ *		dx = dx % dy;
+ *		xpos = xneg + 1;
+ *		if (neg) {
+ *			xneg = -xneg;
+ *			xpos = -xpos;
+ *		}
+ *		eneg = 2 * dx;
+ *		e = 2 * dx - dy;
+ *		epos = 2 * dx - 2 * dy;
+ *
+ *	Note: the 2-words values epos and eneg are stored low word low address
+ *	so that the double precision calculations are easier and faster in the
+ *	output routine.
+ *
+ *	in:
+ *		r5	current edge record
+ *		r11	shape depth
+ *		r12	current edge record
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r2 r3 r4 r5 r6 r7 r8 r9 r10
+ *
+ *	usage:
+ *		r5	current edge record
+ *		r11	shape depth
+ *		r13	xneg
+ *		r14	xpos
+ *		r15	neg
+ *		Q	dx
+ *
+ *	changed:
+ *		r0 r1 r13 r14 Q L M
+ */
+in_diag:
+	M<>-> r0;				/* x = xtop, add offset */
+	add AB r15 r0, Y->L<>;
+
+	M<>->D, subs DA r0 rX QREG, cjp In l1;	/* dx = xbot - xtop, >= 0? */
+	0-> r15, jmp l2;			/* No: neg = 0 */
+l1:	negQ;					/* Yes: dx = -dx */
+	1 E-> r15;				/* neg = 1 */
+
+l2:	0-> r1;					/* xneg = dx / dy */
+	r11 -> r0, jsb div32;			/* dx = dx % dy */
+
+	add1 ZQ rX r14 RAMF;			/* xpos = xneg + 1 */
+
+	test r15, cjp Iz l3;			/* Was dx -ve? */
+
+	negQ;					/* Yes: xneg = -xneg */
+	neg r14;				/* xpos = -xpos */
+
+l3:	Q-> r13;				/* eneg = 2 * dx */
+	r1 ->Q;
+	and ZA rX r0 RAMQU, shift <<0;
+	DR_ENEG E->D, add DA r12, Y->L;
+	Q->L<>;
+	r0 ->L<>;				
+
+	r13 ->L<>;				/* save xneg */
+
+	subr AQ r11 rX QREG, Ic/->M;		/* e = 2 * dx - dy */
+	subrMc ZA r0 r0 RAMF;
+	DR_E E->D, add DA r12, Y->L;
+	r0 ->L<>;
+	Q->L<>;
+
+	subr AQ r11 rX QREG, Ic/->M;		/* epos = 2 * dx - 2 * dy */
+	subrMc ZA r0 r0 RAMF;
+	Q->L<>;
+	r0 ->L<>;
+
+	r14 ->L<>;				/* save xpos */
+
+	offset E->L;
+	L<>-> r15, rtn;				/* Restore reading offset */
+
+eject;
+/*
+ *	IN_ELLIPSE
+ *
+ *	- Inputs an elliptical edge record.
+ *
+ *	in:
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12
+ *
+ *	changed:
+ *		r0 L M
+ */
+in_ellipse:
+	M<>-> r0;				/* Fetch centre-x, add off */
+	add AB r15 r0, Y->L<>;
+
+	M<>->L<>;				/* Copy y-start */
+	M<>-> r0;				/* Fetch vert. semi-axis (a) */
+	M<>->L<>;				/* Copy horiz. semi-axis (b) */
+	2 E->L<>;				/* Initialise last root */
+	r0 ->L<>, rtn;
+	
+eject;
+/*
+ *	OUT_SHAPE
+ *
+ *	- Outputs a band of scan-lines for a shape.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	usage:
+ *		r0	current run
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	shape depth
+ *		r9	left x
+ *
+ *	changed:
+ *		r0 r2 r6 r8 r9 L
+ */
+out_shape:
+	L<>-> r8;				/* Fetch shape depth */
+
+out_line:
+	dec r8, cjp In remove_shape;		/* Shape finished? */
+
+	SR_LEFT_TYPE E->D, add DA r5, Y->L;	/* No: calculate left edge */
+	jsb calc_edge;
+
+	SR_RIGHT_TYPE E->D, add DA r5, Y->L;	/* Calculate right edge */
+	r0 -> r9, jsb calc_edge;
+
+	r9 cmp r0, cjp Iugt l9;			/* Left edge > right edge? */
+
+	subr AB r9 r0 RAMF;			/* No: compute run */
+	inc r0;
+
+	h'c000' E-> r2;
+	and AB r2 r0, Y->IO OBB_BIT_CON, ack;	/* Load high order run bits */
+	or AB r2 r0 RAMF;			/* Encode low order run bits */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r9 ->IO OBB_RUN_ADDR, ack;		/* Load run address */
+	r0 ->IO OBB_RUN_DATA, ack;		/* Load run data */
+
+l9:	inc r6;					/* Bump line address */
+	r6 cmp r7, cjp Iult out_line;		/* Finished band? */
+
+	SR_DEPTH E->D, add DA r5, Y->L;		/* Yes: Save depth */
+	r8 ->L<>, jmp image_alive;
+
+eject;
+/*
+ *	CALC_EDGE
+ *
+ *	- Calculates the next x-value for the current edge.  Assumes local
+ *	memory address latch is set up with the address of the current edge
+ *	type field.
+ *
+ *	in:
+ *		r5	current image pointer
+ *
+ *	in use:
+ *		r3 r4 r6 r7 r8 r9
+ *
+ *	usage:
+ *		r0	edge type
+ *		r10	edge record
+ *
+ *	changed:
+ *		r0 r10 L
+ */
+calc_edge:
+	L<>-> r0;				/* Fetch edge type */
+	L<>-> r10, Y->L;			/* Fetch edge record */
+
+	test r0, cjp Iz calc_vert;		/* Vertical edge? */
+	dec r0, cjp Iz calc_diag;		/* Diagonal edge? */
+	jmp calc_ellipse;			/* Elliptical edge */
+
+eject;
+/*
+ *	CALC_VERT
+ *
+ *	- Calculates the next x-value for a vertical edge.  Assumes local
+ *	address latch is set up with the address of the first word of the
+ *	edge record.
+ *
+ *	out:
+ *		r0	x
+ *
+ *	in use:
+ *		r3 r4 r5 r6 r7 r8 r9 r10
+ *
+ *	changed:
+ *		r0 L
+ */
+calc_vert:
+	L<>-> r0, rtn;				/* Fetch x */
+
+eject;
+/*
+ *	CALC_DIAG
+ *
+ *	- Calculates the next x-value for a diagonal edge.  Assumes local
+ *	address latch is set up with the address of the first word of the
+ *	edge record.  Uses the Bresenham algorithm.  Computation as follows:
+ *
+ *		xval = x;
+ *		if (e >= 0) {
+ *			e += epos;
+ *			x += xpos;
+ *		}
+ *		else {
+ *			e += eneg;
+ *			x += xneg;
+ *		}
+ *
+ *	in:
+ *		r10	edge record
+ *
+ *	out:
+ *		r0	x
+ *
+ *	in use:
+ *		r3 r4 r5 r6 r7 r8 r9
+ *
+ *	usage:
+ *		r14	e (hi)
+ *		r15	e (lo)
+ *
+ *	changed:
+ *		r0 r11 r14 r15 L
+ */
+calc_diag:
+	L<>-> r0;				/* Fetch next x-value */
+	r0 -> r11;
+
+	L<>-> r14;				/* Fetch error term */
+	L<>-> r15;
+
+	test r14, cjp In/ l10;			/* e -ve? */
+
+	DR_ENEG E->D, add DA r10, Y->L;		/* Yes: */
+
+l10:	L<>->D, add DA r15 r15 RAMF, I->M;	/* e += epos/eneg */
+	L<>->D, addMc DA r14 r14 RAMF;
+
+	L<>->D, add DA r11 r11 RAMF;		/* x += xpos/xneg */
+
+	r10 ->L;				/* Save x */
+	r11 ->L<>;
+
+	r14 ->L<>;				/* Save e */
+	r15 ->L<>, rtn;
+
+eject;
+/*
+ *	CALC_ELLIPSE
+ *
+ *	- Calculates the next x-value for an elliptical edge.  Assumes local
+ *	address latch is set up with the address of the first word of the
+ *	edge record.  The information carried in the elliptical edge record is
+ *	as follows:
+ *
+ *		Name	Description
+ *
+ *		xc	x-coordinate of the ellipse centre
+ *		y	vertical distance from ellipse centre (-ve below)
+ *		a	horizontal semi-axis length (-ve compute left half)
+ *		b	vertical semi-axis length
+ *		lr	last computed square root (1-bit fixed point)
+ *
+ *	The calculation is as follows:
+ *
+ *		x.x   y.y			equation of ellipse
+ *		--- + --- = 1
+ *		a.a   b.b
+ *
+ *		       ---------
+ *		    a./b.b - y.y		solve for x
+ *		x = ------------
+ *		          b
+ *
+ *		       ---------------
+ *		    a./(b + y).(b - y)		simplify
+ *		x = ------------------
+ *		             b
+ *
+ *	The square root calculation is performed using Newtons approximation.
+ *	The value passed to this routine is fixed point 2-bit which yields
+ *	a fixed point 1-bit result.  This leads to a greatly improved elliptical
+ *	edge although the Lasercomp doesn't do this!
+ *
+ *	The algorithm is as follows:
+ *
+ *		/* Fetch xc y b lr a */
+ *		/* Save y = y + 1 */
+ *		lr = sqrt(lr, 2 * (b + y) * 2 * (b - y));
+ *		if (lr == 0) {
+ *			/* Save lr = 2 */
+ *			return xc;		/* No solution */
+ *		}
+ *		lr /= 2;
+ *		/* Save lr */
+ *		x = (abs(a) * lr) / b;
+ *		if (a < 0) 
+ *			return xc - x;
+ *		else
+ *			return xc + x;
+ *
+ *	out:
+ *		r0	x
+ *
+ *	in use:
+ *		r3 r4 r5 r6 r7 r8 r9 r10
+ *
+ *	usage:
+ *		r0	y lr
+ *		r11	xc
+ *		r12	a
+ *		r13	b
+ *		r14	2 * (b + y) * 2 * (b - y) (hi)
+ *		r15	2 * (b + y) * 2 * (b - y) (lo)
+ *
+ *	changed:
+ *		r0 r1 r11 r12 r13 r14 r15 Q L
+ */
+calc_ellipse:
+	L<>-> r11;				/* Fetch xc */
+	L<>-> r0, noinc;			/* Fetch y */
+	subr1 ZA r0, Y->L<>;			/* Decrement y */
+	L<>-> r13;				/* Fetch b */
+
+	r0 -> r1;				/* lr = sqrt(lr, 2 * (b + y) */
+	add AB r13 r0 RAMU, shift <0;		/*	 * 2 * (b - y));     */
+	subs AB r13 r1 RAMU, shift <0, jsb smult;
+	r0 -> r14;
+	r1 -> r15;
+	L<>-> r0, noinc, jmp sqrt;		/* Fetch lr */
+
+no_root:2 E->L<>;				/* Save lr = 2 */
+	r11 -> r0, rtn;				/* return xc; */
+
+real_root:
+	r0 ->L<>;				/* Save lr */
+
+	L<>-> r12;				/* Fetch a */
+	r12 -> r1, cjp In/ l11;			/* x = (abs(a) * lr) / b; */
+	neg r1;
+l11:	jsb umult;
+	r1 ->Q;
+	r0 -> r1;
+	r13 -> r0, jsb div32;
+	or ZQ rX r0 RAMD, shift 0>;		/* x /= 2; */
+
+	test r12, cjp In/ l12;			/* if (a < 0)          */
+	subs AB r11 r0 RAMF, rtn;		/*	return xc - x; */
+						/* else                */
+l12:	add AB r11 r0 RAMF, rtn;		/* 	return xc + x; */
+
+eject;
+/*
+ *	SQRT
+ *
+ *	- Computes square root using Newtons approximation.  Not a subroutine.
+ *	The algorithm is as follows:
+ *
+ *		if (val <= 0)
+ *			return 0;	/* No root */
+ *		next = guess;
+ *		do {
+ *			guess = next;
+ *			next = (guess + val / guess) / 2;
+ *		} 
+ *		while (abs(next - guess) > 1);
+ *		return guess;
+ *
+ *	The loop termination tests for a difference of 1 or less.  One is added
+ *	to the difference and the unsigned result tested for 2 or less, because
+ *	this is easier and faster.  This is equivalent to an error of 0.5 or
+ *	less.
+ *
+ *	in:
+ *		r0	guess
+ *		r14	val (hi)
+ *		r15	val (lo)
+ *
+ *	out:
+ *		r0	root
+ *
+ *	in use:
+ *		r3 r4 r5 r6 r7 r8 r9 r10 r11 r13
+ *
+ *	usage:
+ *		r1	next
+ *		r12	2
+ *
+ *	changed:
+ *		r0 r1 r12 Q
+ */
+sqrt:	test r14, cjp In no_root;	/* if (val <= 0 ) */
+	test r14, cjp Iz/ l13;		/*	return 0; */
+	test r15, cjp Iz no_root;
+
+l13:	2 E-> r12;
+	r0 -> r1;			/* next = guess; */
+
+recalc:	r1 -> r0;			/* do { guess = next; */
+
+	r14 -> r1;			/* next = (guess + val / guess) / 2; */
+	r15 ->Q, jsb div32;
+	add AQ r0 r1 RAMD, shift 0>;
+
+	subr AB r1 r0 RAMF;		/* } while (abs(next - guess) > 1); */
+	inc r0;
+	r0 cmp r12, cjp Iugt recalc;
+
+	r1 -> r0, jmp real_root;
+
+eject;
+/*
+ *	PAT_SHAPE
+ *
+ *	- Outputs a band of scan-lines for a patterned shape.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	usage:
+ *		r0	current run
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	left x
+ *		r9	shape depth
+ *		r10	encoded run
+ *
+ *	changed:
+ *		r0 r2 r6 r8 r9 L
+ */
+pat_shape:
+	L<>-> r9;				/* Fetch shape depth */
+
+pat_line:
+	dec r9, cjp In remove_shape;		/* Shape finished? */
+
+	SR_LEFT_TYPE E->D, add DA r5, Y->L;	/* Calculate left edge */
+	jsb calc_edge;
+
+	SR_RIGHT_TYPE E->D, add DA r5, Y->L;	/* Calculate right edge */
+	r0 -> r8, jsb calc_edge;
+
+	r8 cmp r0, cjp Iugt l14;		/* Left edge > right edge? */
+
+	add1 ZA r0 r10 RAMF;
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+
+	0-> r1;					/* Recompute x-phase */
+	r8 ->Q;
+	PR_PAT_A+B E->D, add DA r3, Y->L;
+	L<>-> r0, jsb div32;
+
+	GR_XPHASE E->D, add DA r5, Y->L;
+	r1 ->L<>, jsb calc_pat;			/* Compute pattern */
+	test r1, cjp Iz/ l14;			/* Output this run? */
+
+	subr AB r8 r10 RAMF;			/* Yes: compute run */
+
+	h'c000' E-> r2;
+	and AB r2 r10, Y->IO OBB_BIT_CON, ack;	/* Load high order run bits */
+	or AB r2 r10 RAMF;			/* Encode low order run bits */
+
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Load run address */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run data */
+
+l14:	inc r6, jsb inc_pat;			/* Bump addr, increment phase */
+	r6 cmp r7, cjp Iult pat_line;		/* Finished band? */
+
+	SR_DEPTH E->D, add DA r5, Y->L;		/* Yes: Save depth */
+	r9 ->L<>, jmp image_alive;
+
+eject;
+/*
+ *	TINT_SHAPE
+ *
+ *	- Outputs a band of scan-lines for a tinted shape.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	in use:
+ *		r3 r4
+ *
+ *	usage:
+ *		r2	cell phase
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	shape depth
+ *		r9	left x
+ *		r10	masking run
+ *		r11	y-phase
+ *		r12	x-phase, tint bit, cell type
+ *		r13	tint values
+ *		r15	cell size
+ *
+ *	changed:
+ *		r0 r1 r2 r6 r8 r9 r10 r11 r12 r13 r14 r15 Q L
+ */
+tint_shape:
+	L<>-> r8;				/* Fetch shape depth */
+
+	GR_YPHASE E->D, add DA r5, Y->L;	/* Fetch y-phase */
+	L<>-> r2;
+
+tint_line:
+	dec r8, cjp In remove_shape;		/* Shape finished? */
+
+	SR_LEFT_TYPE E->D, add DA r5, Y->L;	/* No: calculate left edge */
+	jsb calc_edge;
+
+	SR_RIGHT_TYPE E->D, add DA r5, Y->L;	/* Calculate right edge */
+	r0 -> r9, jsb calc_edge;
+
+	subr AB r9 r0 RAMF;			/* Compute run */
+	add1 ZA r0 r10 RAMF;
+
+	PR_DATA1 E->D, add DA r3, Y->L;		/* Fetch cell size */
+	L<>-> r15;
+	add1 ZA r15 r14 RAMF;
+
+	0-> r1;					/* Compute x-phase */
+	r9 ->Q;
+	or ZA r14 r0 RAMU, shift <0, jsb div32;
+
+	r1 cmp r14, cjp Iult l15;		/* Even horizontal cell type? */
+
+	OBB_ODD_CELL E-> r12;			/* No: set odd cell */
+	subr AB r14 r1 RAMF, jmp l16;		/* Compute phase */
+
+l15:	0-> r12;				/* Set even cell */
+
+l16:	OBB_ODD_CELL E->D, and DA r2 r11 RAMF;	/* Extract vertical cell type */
+	exor AB r2 r12 RAMF;			/* Determine start cell type */
+
+	add AB r1 r1 RAMU, shift <0, phlc 2;	/* Shift up by 8 */
+	add AB r1 r1 RAMU, shift <0, rfct;
+	'OBB_TINT + OBB_TONE_MAGIC' E->D, add DA r1 r1 RAMF;	/* Add bits */
+	or AB r1 r12 RAMF;			/* Add with start cell type */
+
+	r14 -> r0;				/* Compute cells in line */
+	0-> r1;
+	r10 ->Q, jsb div32;
+	Q-> r14;
+
+	h'c000' E->D, and DA r10 r1 RAMF;	/* Load high bits, size, rep */
+	r15 -> r0;
+	add AB r0 r0 RAMU, shift <0;
+	add AB r0 r0 RAMU, shift <0;
+	or AB r0 r1, Y->IO OBB_BIT_CON, ack;
+
+	h'c000' E->D, or DA r10 r10 RAMF;	/* Encode low order run bits */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r9 ->IO OBB_RUN_ADDR, ack;		/* Load run address */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run data */
+	r12 ->IO OBB_TONE_CON, ack;		/* Load halftone control reg */
+
+	L<>-> r13;				/* Fetch tint values */
+
+tint_data:
+	r13 ->IO OBB_TONE_DATA, ack;		/* Load tint data */
+	dec r14, cjp Iz/ tint_data;		/* Finished line? */
+
+	OBB_RUN_BSY E-> r1;			/* Yes: output dummy words */
+l4:	0->IO OBB_TONE_DATA, ack;		/* until run decoder finished */
+	OBB_STATUS IO-> r0;
+	and AB r0 r1, cjp Iz l4;
+
+	OBB_PHASE_MASK E->D, and DA r2 r2 RAMF;	/* Yes: extract y-phase */
+
+	dec r2, cjp In/ l17;			/* Finished cell? */
+
+	r15 -> r2;				/* Yes: reload y-phase */
+	OBB_ODD_CELL E->D, exor DA r11 r11 RAMF;/* Toggle cell type */
+
+l17:	or AB r11 r2 RAMF;			/* Join cell type and y-phase */
+	inc r6;					/* Bump line address */
+	r6 cmp r7, cjp Iult tint_line;		/* Finished band? */
+
+	SR_DEPTH E->D, add DA r5, Y->L;		/* Yes: Save depth */
+	r8 ->L<>;
+	GR_YPHASE E->D, add DA r5, Y->L;	/* Save y-phase */
+	r2 ->L<>, jmp image_alive;
+
+	end;

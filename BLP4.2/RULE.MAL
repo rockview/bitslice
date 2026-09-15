@@ -1,0 +1,260 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Rule image support.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4
+ *	+----------------------------------+
+ *	|  2   | skip |depth | left |right |
+ *	|      |      |      |  x   |  x   |
+ *	+----------------------------------+
+ *
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  2   | skip |depth | left |right |      |      |  x   |  y   |
+ *	|      |      |      |      |  x   |  x   |      |      |phase |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Author:	J A Hall
+ *	Date:	17 Mar 87
+ */
+
+segment	rule_rel;
+
+listing	!s;
+include	'death.h';			/* Image death handling */
+include	'list.h';			/* Priority/image list */
+include	'math.h';			/* Arithmetic support */
+include 'pattern.h';			/* Patterning support */
+include	'phase.h';			/* Initial pattern/tint phase calc. */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+listing	s;
+
+entry	in_rule, out_rule, pat_rule, tint_rule;
+
+eject;
+/*
+ *	IN_RULE
+ *
+ *	- Inputs a rule record.  Not a subroutine.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r7	current priority record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r5 r6 r8 r9
+ *
+ *	changed:
+ *		r0 r1 M L
+ */
+in_rule:
+	M<>->L<>;				/* Copy rule depth */
+
+	M<>-> r0;				/* Fetch left-x, add offset */
+	add AB r15 r0 RAMF, Y->L<>;
+
+	M<>-> r1;				/* Fetch right-x, add offset */
+	add AB r15 r1, Y->L<>, jmp calc_phase;
+
+eject;
+/*
+ *	OUT_RULE
+ *
+ *	- Outputs a band of scan-lines for a rule.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	rule depth
+ *		r9	run start address
+ *		r10	black run
+ *
+ *	changed:
+ *		r0 r2 r6 r8 r9 r10 L
+ */
+out_rule:
+	L<>-> r8;				/* Fetch rule depth */
+	L<>-> r9;				/* Fetch run start */
+	L<>->D, subs DA r9 r10 RAMF;		/* Compute breadth */
+	inc r10;
+
+	h'c000' E-> r2;
+	and AB r2 r10, Y->IO OBB_BIT_CON, ack;	/* Load high order run bits */
+	or AB r2 r10 RAMF;			/* Encode low order run bits */
+
+out_line:
+	dec r8, cjp In remove_image;		/* Rule finished? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r9 ->IO OBB_RUN_ADDR, ack;		/* Load run address */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run data */
+
+	inc r6;					/* Bump line address */
+	r6 cmp r7, cjp Iult out_line;		/* Finished band? */
+
+	SR_DEPTH E->D, add DA r5, Y->L;		/* Yes: save depth */
+	r8 ->L<>, jmp image_alive;
+
+eject;
+/*
+ *	PAT_RULE
+ *
+ *	- Outputs a band of scan-lines for a patterned rule.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	run start address
+ *		r9	rule depth
+ *		r10	black run
+ *
+ *	changed:
+ *		r0 r2 r6 r8 r9 r10 L
+ */
+pat_rule:
+	L<>-> r9;				/* Fetch rule depth */
+	L<>-> r8;				/* Fetch run start */
+	L<>->D, subs DA r8 r10 RAMF;		/* Compute breadth */
+	inc r10;
+
+	h'c000' E-> r2;
+	and AB r2 r10, Y->IO OBB_BIT_CON, ack;	/* Load high order run bits */
+	or AB r2 r10 RAMF;			/* Encode low order run bits */
+
+pat_line:
+	dec r9, cjp In remove_image;		/* Rule finished? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* No: load line address */
+
+	jsb calc_pat;				/* Compute pattern */
+	test r1, cjp Iz/ l2;			/* Output this run? */
+
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Yes: load run address */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run data */
+
+l2:	inc r6, jsb inc_pat;			/* Bump addr, increment phase */
+	r6 cmp r7, cjp Iult pat_line;		/* Finished band? */
+
+	SR_DEPTH E->D, add DA r5, Y->L;		/* Yes: Save depth */
+	r9 ->L<>, jmp image_alive;
+
+eject;
+/*
+ *	TINT_RULE
+ *
+ *	- Outputs a band of scan-lines for a tinted rule.  Not a subroutine.
+ *
+ *	in:
+ *		r3	current priority pointer
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	rule depth
+ *		r9	run start address
+ *		r10	masking run
+ *		r11	y-phase
+ *		r12	x-phase, tint bit and cell type bit
+ *		r13	tint values
+ *		r14	line cell count
+ *		r15	cell size
+ *
+ *	changed:
+ *		r0 r1 r2 r6 r8 r9 r10 r11 r12 r13 r14 r15 Q L
+ */
+tint_rule:
+	L<>-> r8;				/* Fetch rule depth */
+	L<>-> r9;				/* Fetch run start */
+	L<>->D, subs DA r9 r10 RAMF;		/* Compute breadth */
+	inc r10;
+
+	PR_DATA1 E->D, add DA r3, Y->L;		/* Fetch cell size */
+	L<>-> r15;
+	add1 ZA r15 r0 RAMF;
+
+	0-> r1;					/* Compute cells in line */
+	r10 ->Q, jsb div32;
+	Q-> r14;
+
+	L<>-> r13;				/* Fetch tint values */
+
+	h'c000' E->D, and DA r10 r1 RAMF;	/* Load high bits, size, rep */
+	r15 -> r0;
+	add AB r0 r0 RAMU, shift <0;
+	add AB r0 r0 RAMU, shift <0;
+	or AB r0 r1, Y->IO OBB_BIT_CON, ack;
+
+	h'c000' E->D, or DA r10 r10 RAMF;	/* Encode low order run bits */
+
+	GR_XPHASE E->D, add DA r5, Y->L;	/* Fetch x-phase */
+	L<>-> r12;
+	L<>-> r11;				/* Fetch y-phase */
+
+tint_line:
+	dec r8, cjp In remove_image;		/* Rule finished? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r9 ->IO OBB_RUN_ADDR, ack;		/* Load run address */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run data */
+	or AB r12 r11, Y->IO OBB_TONE_CON, ack;	/* Load halftone control reg */
+
+	r14 -> r2;				/* Set line cell count */
+
+tint_data:
+	r13 ->IO OBB_TONE_DATA, ack;		/* Load tint data */
+	dec r2, cjp Iz/ tint_data;		/* Finished line? */
+
+	OBB_RUN_BSY E-> r1;			/* Yes: output dummy words */
+l3:	0->IO OBB_TONE_DATA, ack;		/* until run decoder finished */
+	OBB_STATUS IO-> r0;
+	and AB r0 r1, cjp Iz l3;
+
+	dec r11, cjp In/ l1;			/* Yes: finished cell? */
+
+	r15 -> r11;				/* Yes: reload y-phase */
+	OBB_ODD_CELL E->D, exor DA r12 r12 RAMF;/* Toggle cell type */
+
+l1:	inc r6;					/* Bump line address */
+	r6 cmp r7, cjp Iult tint_line;		/* Finished band? */
+
+	SR_DEPTH E->D, add DA r5, Y->L;		/* Yes: save depth */
+	r8 ->L<>;
+	GR_XPHASE E->D, add DA r5, Y->L;
+	r12 ->L<>;				/* Save x-phase */
+	r11 ->L<>, jmp image_alive;		/* Save y-phase */
+
+	end;

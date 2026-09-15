@@ -1,0 +1,96 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Series3 buffer load process main memory variables.
+ *
+ *	All information that passes between the GPP to OBP takes place through
+ *	fixed locations in the low page of OBP main memory.  Information
+ *	and events are passed to the OBP via a polling interface.  The
+ *	OBP loop reads these locations when waiting for GPP events.  During
+ *	polling a 10us delay is introduced between reads so that the OBP
+ *	doesn't hog main memory cycles.  An event is signalled by the GPP
+ *	setting a polling location to a non-zero value.  When an event occurs
+ *	the OBP reads additional information associated with the event.
+ *	Polling and associated information locations are stored in a specific
+ *	order so that the OBP is able to read them using the auto-incrementing
+ *	address latches.  When the OBP has finished reading the information
+ *	associated with an event it clears the polling location thus 
+ *	indicating to the GPP that it is available for re-use.  The polling
+ *	locations are arranged as follows:
+ *
+ *	0	poll for job start
+ *	1		OBB mode
+ *	2		forward/reverse reading offset
+ *	3		image memory base address (hi)
+ *	4		image memory base address (lo)
+ *	5		death list length
+ *	6		death list buffer 1 address (lo, always in lo page)
+ *	7		death list buffer 2 address (lo, always in lo page)
+ *	8		scan conversion intercept/run buffer length (bytes)
+ *	9		scan conversion winding array length (bytes)
+ *	A		spare
+ *	B		spare
+ *	C		spare
+ *	D		spare
+ *	E		spare
+ *	F		spare
+ *	10	poll for addition list
+ *	11		addition list address (hi)
+ *	12		addition list address (lo)
+ *	13	poll for death request
+ *
+ *	Information and events are passed to the GPP via an interrupt
+ *	interface with command block.  The command block is arranged as
+ *	follows:
+ *
+ *	14	semaphore
+ *	15	type
+ *	16	parameter
+ *
+ *	An event is signalled by the OBP by writing the type and parameter
+ *	locations, setting the semaphore location non-zero, and interrupting.
+ *	When the GPP has serviced the interrupt it clears the semaphore
+ *	location.  The OBP cannot write to the command block until the
+ *	GPP has cleared the semaphore and polls on this condition.
+ *
+ *	When the OBP has processed each band of scan lines it writes the
+ *	the current scan line address to a a pair of main memory locations.
+ *	This is displayed from time to time on the front panel thereby
+ *	providing an indication to the user that the job is running.  It
+ *	is also used to indicate a time out condition if it isn't changed
+ *	within a certain period of time.  The writing/reading of the address
+ *	is controlled by a semaphore.  The locations are arranged as follows:
+ *
+ *	17	semaphore
+ *	18	scan line address (hi)
+ *	19	scan line address (lo)
+ *
+ *	The OBP writes to the scan line address and then sets the semaphore
+ *	indicating to the GPP that a new address is available.  When the
+ *	GPP has read the address it clears the semaphore indicating to the
+ *	OBP that the locations are available for re-use.  The OBP omits
+ *	writing a new address if the semaphore is still set indicating that
+ *	the GPP hasn't read the last address yet.  The GPP simply increments
+ *	a timeout count if the semaphore is still clear indicating that the
+ *	OBP hasn't written a new address yet.
+ *
+ *	Author:	J A Hall
+ *	Date:	8 Feb 87
+ */
+
+segment	main_abs, abs(0);
+
+entry	poll_job, poll_list, poll_death;
+entry	intr_sema, depth_sema;
+
+/* GPP to OBP information */
+org	h'0';
+poll_job:	reserve	16;	/* Poll for job start */
+poll_list:	reserve 3;	/* Poll for addition list */
+poll_death:	reserve 1;	/* Poll for death list */
+
+/* OBP to GPP information */
+intr_sema:	reserve	3;	/* Interrupt semaphore */
+depth_sema:	reserve 3;	/* Typesetting depth semaphore */
+
+	end;

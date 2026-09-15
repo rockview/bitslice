@@ -1,0 +1,301 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Bitmap/halftone image support.
+ *
+ *	Addition list record:
+ *
+ *	Bitmap-
+ *         0      1      2      3      4      5      6
+ *	+------------------------------------------------+
+ *	|  6   | skip |image | pcb  |  x   |repli-|brea- |
+ *	|      |      |blkno | ptr  |      |cation|dth   |
+ *	+------------------------------------------------+
+ *
+ *	Halftone-
+ *         0      1      2      3      4      5      6
+ *	+------------------------------------------------+
+ *	|  7   | skip |image | pcb  |  x   | cell |brea- |
+ *	|      |      |blkno | ptr  |      | size |dth   |
+ *	+------------------------------------------------+
+ *
+ *	Image list record:
+ *
+ *	Bitmap graphic record-
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  6   | skip |    data     | pcb  |  x   |repli-|brea- | rep. |
+ *	|      |      |      |   address   | ptr  |      |cation|dth   |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Halftone graphic record-
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  7   | skip |    data     | pcb  |  x   | cell |brea- | cell |
+ *	|      |      |      |   address   | ptr  |      | size |dth   |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Author:	J A Hall
+ *	Date:	17 Mar 87
+ */
+
+segment	picture_rel;
+
+listing	!s;
+include	'addr.h';			/* Image block number conversion */
+include	'death.h';			/* Image death handling */
+include	'in_list.h';			/* Addition list */
+include	'list.h';			/* Priority/image list */
+include	'math.h';			/* Arithmetic support */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+listing	s;
+
+entry	in_pic_start, in_picture, out_bitmap, out_halftone;
+
+eject;
+/*
+ *	IN_PIC_START
+ *
+ *	- Inputs start of a picture record.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r8 r9
+ *
+ *	changed:
+ *		r0 L M
+ */
+in_pic_start:
+	M<>-> r0, jsb mk_addr;			/* Convert/write block number */
+	GR_ADDR_HI E->D, add DA r5, Y->L;
+	r12 ->L<>;
+	PIC_HDR_LEN E->D, add DA r13, Y->L<>;	/* Skip picture header */
+
+	M<>->D, or DZ rX r0 RAMD, shift 0>;	/* Fetch/copy: pcb pointer */
+	r0 ->L<>;
+
+	M<>-> r0;				/* Fetch x-posn, add offset */
+	add AB r15 r0 RAMF, Y->L<>, rtn;
+
+eject;
+/*
+ *	IN_PICTURE
+ *
+ *	- Inputs bitmap/halftone record.  Not a subroutine.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r8 r9
+ *
+ *	changed:
+ *		r0 L M
+ */
+in_picture:
+	jsb in_pic_start;			/* Read start of record */
+
+	M<>->L<>, D-> r11;			/* Copy rep/screen size */
+
+	M<>-> r1;				/* Fetch picture width */
+	add1 ZA r11 r0 RAMF, jsb umult;		/* Scale width */
+	r1 ->L<>;				/* Save width */
+
+	r11 ->L<>, jmp next_rec;		/* Init. rep/screen phase */
+
+eject;
+/*
+ *	OUT_BITMAP
+ *
+ *	- Outputs a band of scan-lines for a bitmap.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	x-posn
+ *		r9	replication phase
+ *		r10	encoded masking run
+ *		r11	picture control block pointer
+ *
+ *	changed:
+ *		r0 r1 r6 r8 r9 r10 r11 L M
+ */
+out_bitmap:
+	L<>->MH;				/* Load image data address */
+	L<>->ML;
+	L<>-> r11;				/* Fetch pcb pointer */
+	L<>-> r8;				/* Fetch x-posn */
+	L<>-> r9;				/* Fetch replication factor */
+	L<>-> r10;				/* Fetch width */
+
+	h'c000' E->D, and DA r10 r1 RAMF;	/* Load high bits, size, rep */
+	h'00f0' E->D, or DA r1 r1 RAMF;
+	or AB r1 r9, Y->IO OBB_BIT_CON;
+
+	h'c000' E->D, or DA r10 r10 RAMF;	/* Encode low order run bits */
+
+	L<>-> r9;				/* Fetch replication phase */
+
+	0->IO OBB_TONE_CON, ack;		/* Force bitmap byte detect */
+
+bitmap_line:
+	M<>-> r0, cjs_Blkno chain_pic;		/* Fetch byte count */
+	test r0, cjp Iz remove_picture;		/* End of image? */
+
+	add1 ZA r0 r1 RAMD, shift 0>;		/* No: make word count */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run */
+
+bitmap_data:
+	M<>-> r0, cjs_Blkno chain_pic;		/* Read bitmap data */
+	r0 ->IO OBB_BIT_DATA, ack;		/* Load bitmap data */
+
+	dec r1, cjp Iz/ bitmap_data;		/* Finished line? */
+
+	OBB_RUN_BSY E-> r1;			/* Yes: output dummy words */
+l8:	0->IO OBB_BIT_DATA, ack;		/* until run decoder finished */
+	OBB_STATUS IO-> r0;
+	and AB r0 r1, cjp Iz l8;
+
+	dec r9, cjp In/ l5;			/* Finished replication? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes: save line address */
+	ML->L<>;
+	PI_REP_FACTOR E->D, add DA r5, Y->L;	/* Reload replication */
+	L<>-> r9, jmp l4;
+
+l5:	GR_ADDR_HI E->D, add DA r5, Y->L;	/* No: reload data address */
+	L<>->MH;
+	L<>->ML;
+
+l4:	inc r6;					/* Yes: bump line address */
+	r6 cmp r7, cjp Ine bitmap_line;		/* Finished band? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes: save line address */
+	ML->L<>;
+
+	GR_YPHASE E->D, add DA r5, Y->L;	/* Save replication phase */
+	r9 ->L<>, jmp image_alive;
+
+eject;
+/*
+ *	OUT_HALFTONE
+ *
+ *	- Outputs a band of scan-lines for a halftone.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	x-posn
+ *		r9	cell phase
+ *		r10	encoded masking run
+ *		r11	picture control block pointer
+ *
+ *	changed:
+ *		r0 r1 r6 r8 r9 r10 r11 L M
+ */
+out_halftone:
+	L<>->MH;				/* Load image data address */
+	L<>->ML;
+	L<>-> r11;				/* Fetch pcb pointer */
+	L<>-> r8;				/* Fetch x-posn */
+	L<>-> r9;				/* Fetch cell size */
+	L<>-> r10;				/* Fetch width */
+
+	h'c000' E->D, and DA r10 r1 RAMF;	/* Load high bits, size, rep */
+	r9 -> r0;
+	add AB r0 r0 RAMU, shift <0;
+	add AB r0 r0 RAMU, shift <0;
+	or AB r0 r1, Y->IO OBB_BIT_CON;
+
+	h'c000' E->D, or DA r10 r10 RAMF;	/* Encode low order run bits */
+
+	L<>-> r9, noinc;			/* Fetch cell phase */
+	OBB_ODD_CELL E->D, and DA r9, Y->L<>;	/* Save cell type */
+	OBB_PHASE_MASK E->D, and DA r9 r9 RAMF;	/* Strip cell type */
+
+halftone_line:
+	M<>-> r0, cjs_Blkno chain_pic;		/* Fetch byte count */
+	test r0, cjp Iz remove_picture;		/* End of image? */
+
+	add1 ZA r0 r1 RAMD, shift 0>;		/* No: make word count */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r8 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+	r10 ->IO OBB_RUN_DATA, ack;		/* Load run */
+	GR_YPHASE E->D, add DA r5, Y->L;	/* Load halftone control reg */
+	L<>-> r0;
+	or AB r0 r9, Y->IO OBB_TONE_CON, ack;	
+
+halftone_data:
+	M<>-> r0, cjs_Blkno chain_pic;		/* Read halftone data */
+	r0 ->IO OBB_TONE_DATA, ack;		/* Load even halftone data */
+	cont;					/* Delay one instruction */
+	r0 ->IO OBB_TONE_DATA, ack;		/* Load odd halftone data */
+
+	dec r1, cjp Iz/ halftone_data;		/* Finished line? */
+
+	OBB_RUN_BSY E-> r1;			/* Yes: output dummy words */
+l9:	0->IO OBB_TONE_DATA, ack;		/* until run decoder finished */
+	OBB_STATUS IO-> r0;
+	and AB r0 r1, cjp Iz l9;
+
+	dec r9, cjp In/ l6;			/* Finished cell? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes: save line address */
+	ML->L<>;
+	PI_CELL_SIZE E->D, add DA r5, Y->L;	/* Fetch cell size */
+	L<>-> r9;
+	OBB_ODD_CELL E-> r0;			/* Invert cell type */
+	GR_YPHASE E->D, add DA r5, Y->L;
+	L<>->D, notrs DA r0 r0 RAMF, noinc;
+	r0 ->L<>, jmp l7;
+
+l6:	GR_ADDR_HI E->D, add DA r5, Y->L;	/* No: reload data address */
+	L<>->MH;
+	L<>->ML;
+
+l7:	inc r6;					/* Yes: bump line address */
+	r6 cmp r7, cjp Ine halftone_line;	/* Finished band? */
+
+	GR_ADDR_LO E->D, add DA r5, Y->L;	/* Yes: save line address */
+	ML->L<>;
+
+	GR_YPHASE E->D, add DA r5, Y->L;	/* Fetch cell type */
+	L<>->D, or DA r9 r9 RAMF, noinc;	/* combine with cell phase */
+	r9 ->L<>, jmp image_alive;		/* and save it */
+
+	end;

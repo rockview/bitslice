@@ -1,0 +1,36 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 3 - Interrupt to VME.
+ *
+ *	PASS-	Interrupt.
+ *	FAIL-	Loop.
+ *
+ *	- Just generates interrupt and clears it.
+ *
+ *	Author:	J A Hall
+ *	Date:	26 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 3, version 1.1';
+
+TEST_LED	equ	3;		/* Test number */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	L_INTR E-> r0;			/* Generate interrupt */
+	r0 ->LED;
+
+	TEST_LED E-> r0;		/* Clear interrupt and show test no. */
+	r0 ->LED;
+
+	jmp '$';			/* Loop forever */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

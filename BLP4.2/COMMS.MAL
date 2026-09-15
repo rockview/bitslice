@@ -1,0 +1,119 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- OBP/GPP communications.
+ *
+ *	Author:	J A Hall
+ *	Date:	14 May 87
+ */
+
+segment	comms_rel;
+
+listing	!s;
+include	'job.h';			/* Job control */
+include 'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+include	'misc.h';			/* Miscellaneous routines */
+listing	s;
+
+entry	send_cmd, send_warning, send_fatal, send_depth;
+
+eject;
+/*
+ *	SEND_CMD
+ *
+ *	- Sends a command to the GPP.
+ *
+ *	in:
+ *		r13	command type
+ *		r14	parameter
+ *
+ *	changed:
+ *		r0 L M
+ */
+send_cmd:
+	intr_sema E->MCL;			/* Load semaphore address */
+
+read_sema:
+	M<>->Y, noinc, cjp Iz sema_clear;	/* Semaphore clear? */
+
+	CMD_WAIT E-> r0;			/* No: set command wait LED */
+	r0 ->LED;
+
+	jsb poll_delay;				/* Delay before retry */
+	jmp read_sema;
+
+sema_clear:
+	1 E->M<>;				/* Yes: write semaphore */
+	r13 ->M<>;				/* Command type */
+	r14 ->M<>;				/* Parameter */
+
+	L_INTR E-> r0;				/* Generate interrupt */
+	r0 ->LED;
+	0->LED, rtn;				/* Clear LEDs */
+
+eject;
+/* 
+ *	SEND_WARNING
+ *
+ *	- Sends a warning to the GPP.
+ *
+ *	in:
+ *		r14	warning code
+ *
+ *	changed:
+ *		r13
+ */
+send_warning:
+	I_WARNING E-> r13;			/* Load warning command */
+	jsb send_cmd;				/* Report error */
+	rtn;
+
+eject;
+/* 
+ *	SEND_FATAL
+ *
+ *	- Sends a fatal error to the GPP.  Not a subroutine.
+ *
+ *	in:
+ *		r14	fatal error code
+ *
+ *	changed:
+ *		r0 r13 L
+ */
+send_fatal:
+	9 E-> r0;				/* Pop stack */
+	dec r0, cjpp Iz/ '$';
+
+	I_FATAL E-> r13;			/* Load fatal command */
+	jsb send_cmd;				/* Report error */
+
+	poll_job E->MCL;			/* Clear job poll */
+	0->M<>;
+
+	jmp wait_for_job;
+
+eject;
+/*
+ *	SEND_DEPTH
+ *
+ *	- Sends current typesetting depth to the GPP.
+ *
+ *	in:
+ *		r2	scan line address (hi)
+ *		r3	scan line address (lo)
+ *
+ *	changed:
+ *		M
+ */
+send_depth:
+	depth_sema E->MCL;			/* Load semaphore address */
+	M<>->Y, crtn Iz/;			/* Semaphore clear? */
+
+	r2 ->M<>;				/* Yes: write scan line no. */
+	r3 ->M<>;
+	depth_sema E->MCL;
+	1 E->M<>, rtn;				/* Set semaphore */
+
+	end;
+

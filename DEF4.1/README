@@ -1,0 +1,34 @@
+OBP.MDL version history
+-----------------------
+
+-- Version 2.2
+First saved version. Used with BLP version 2.2.
+
+-- Version 3.1
+Used with BLP version 3.1. Default instruction length changed from 10 to 3 to
+work with the len microinstruction length analyser program.
+
+Added the following instructions:
+
+	Mc>>
+	Mc>Mc
+	Mc<0
+	Mc<1
+	Mc<Mc
+	<Mc
+	cmpQ
+	E->Q
+	L<>cmp
+
+Renamed 0>Mc to Mn>Mc.
+
+-- Version 3.2
+Used with BLP version 3.2. No changes from 3.1.
+
+-- Version 4.1
+Used with BLP versions 3.3, 3.4, and 4.1.
+
+Added the following instructions:
+
+	0->Q
+	cmpL<>

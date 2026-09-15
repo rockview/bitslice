@@ -1,0 +1,283 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Tiled rectangle support. Two types of tiled rectangle are supported:
+ *	bitmap, and line-art. No image phasing is performed.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4      5      6
+ *	+------------------------------------------------+
+ *	|  9   | skip |image | tile |  x   |depth |brea- |
+ *	|      |      |blkno |  id  |      |      |dth   |
+ *	+------------------------------------------------+
+ *
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  9   | skip |    data     | tile |  x   |depth | rpt  |param |
+ *	|      |      |      |   address   |  id  |      |      |      | rec  |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Parameter record:
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| tile | tile | tile |  data start |      |      |      |      |      |
+ *	| type |width | cnt  |   address   |      |      |      |      |      |
+ *	+---------------------------------------------------------------------+
+ *
+ *	Author:	J A Hall
+ *	Date:	23 July 88
+ */
+
+segment	tile_rel;
+
+listing	!s;
+include	'addr.h';			/* Image block number conversion */
+include	'death.h';			/* Image death handling */
+include	'in_list.h';			/* Addition list */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'math.h';			/* Arithmetic support */
+include	'misc.h';			/* Miscellaneous routines */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+include	'picture.h';			/* Picture support */
+listing	s;
+
+entry	in_tile, out_tile;
+
+eject;
+/*
+ *	IN_TILE
+ *
+ *	- Inputs a tiling addition record.  Not a subroutine.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r8 r9
+ *
+ *	changed:
+ *		r0 r1 Q L M
+ */
+in_tile:
+	M<>-> r0, jsb mk_addr;			/* Convert/write block number */
+	GR_ADDR_HI E->D, add DA r5, Y->L;
+	r12 ->L<>;
+	PIC_HDR_LEN E->D, add DA r13, Y->L<>;	/* Skip picture header */
+
+	M<>->L<>;				/* Copy tile id */
+
+	M<>-> r0;				/* Fetch x-posn, add offset */
+	add AB r15 r0 RAMF, Y->L<>;
+
+	M<>->L<>;				/* Copy depth */
+	0->L<>;					/* Clear repeat */
+	M<>->Q, jsb get_rec;			/* Fetch breadth, get record */
+
+	TI_PARAM_REC E->D, add DA r5, Y->L;	/* Link parameter record */
+	r0 -> r10, Y->L<>, jsb fix_addr;
+
+	r12 ->MH;				/* Load picture header addr */
+	r13 ->ML;
+
+	r10 ->L;				/* Copy tile type */
+	M<>->L<>;
+
+	PIC_WIDTH_OFF E->D, add DA r13, Y->ML;	/* Copy tile width */
+	M<>->L<>, D-> r0;
+
+	add AQ r0 rX QREG;			/* Compute and save tile cnt */
+	decQ;
+	0-> r1, jsb div32;
+	Q->L<>;
+
+	r12 ->L<>;				/* Save data start address */
+	PIC_HDR_LEN E->D, add DA r13, Y->L<>;
+
+	list_addr E->L;				/* Reload main address latch */
+	L<>->MH;
+	L<>->ML, jmp next_rec;
+
+eject;
+/*
+ *	OUT_TILE
+ *
+ *	- Outputs a band of scan-lines for a tiled rectangle.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r0	data word
+ *		r1	eol const (line art)/word count (bitmap)
+ *		r2	tile type
+ *		r3	tile width
+ *		r4	tile count
+ *		r5	tiles left
+ *		r6	line address
+ *		r7	band size
+ *		r8	x-posn
+ *		r9	repeat count (line art)/masking run (bitmap)
+ *		r10	depth
+ *		r11	current x
+ *		r12	current address (hi)
+ *		r14	line start address (hi)
+ *		r15	line start address (lo)
+ *
+ *	changed:
+ *		r0 r1 r2 r6 r8 r9 r10 r11 r12 r14 r15 L M
+ */
+out_tile:
+	L<>-> r14;				/* Fetch image data address */
+	L<>-> r15;
+	L<>->Y;					/* Discard tile id */
+	L<>-> r8;				/* Fetch x-posn */
+	L<>-> r10;				/* Fetch depth */
+	L<>-> r9;				/* Fetch repeat count */
+	L<>-> r0;				/* Fetch parameter record */
+
+	reg_save E->L;				/* Save registers */
+	r3 ->L<>;
+	r4 ->L<>;
+	r5 ->L<>;
+
+	r0 ->L;
+	L<>-> r2;				/* Fetch tile type */
+	L<>-> r3;				/* Fetch tile width */
+	L<>-> r4;				/* Fetch tile count */
+
+	subr1 ZA r2, cjp Iz l3;			/* Line-art tile? */
+
+	h'c000' E->D, and DA r3 r0 RAMF;	/* No: load high bits, */
+	h'00f0' E->D, or DA r0 r0 RAMF;		/* size, and replication */
+	r0 ->IO OBB_BIT_CON, ack;		
+	0->IO OBB_TONE_CON, ack;		/* Force bitmap byte detect */
+
+	h'c000' E->D, or DA r3 r9 RAMF;		/* Encode low order run bits */
+	jmp out_line;
+
+l3:	0->IO OBB_BIT_CON, ack;			/* Clear high order run bits */
+	h'8000' E-> r1;				/* Set end-of-line constant */
+
+out_line:					/* --Start line for all tiles */
+	r4 -> r5;				/* Reset tiles left */
+	r8 -> r11;				/* Reset tile position */
+
+tile_sol:					/* --Start line for 1 tile */
+	r14 -> r12, Y->MH;			/* Load image data address */
+	r15 ->ML;
+
+	subr1 ZA r2, cjp Iz line_art;		/* Line-art tile? */
+
+	M<>-> r0, cjs_Blkno chain_tile;		/* No: fetch byte count */
+	test r0, cjp Iz end_tile;		/* End of tile? */
+
+	add1 ZA r0 r1 RAMD, shift 0>;		/* No: make word count */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	r11 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+	r9 ->IO OBB_RUN_DATA, ack;		/* Load run */
+
+bitmap_data:
+	M<>-> r0, cjs_Blkno chain_tile;		/* Read bitmap data */
+	r0 ->IO OBB_BIT_DATA, ack;		/* Load bitmap data */
+
+	dec r1, cjp Iz/ bitmap_data;		/* Finished tile line? */
+
+	OBB_RUN_BSY E-> r1;			/* Yes: output dummy words */
+l9:	0->IO OBB_BIT_DATA, ack;		/* until run decoder finished */
+	OBB_STATUS IO-> r0;
+	and AB r0 r1, cjp Iz l9;
+	jmp tile_eol;
+
+line_art:
+	test r9, cjp Iz l5;			/* In repeated line? */
+
+line_art_rpt:
+	r9 cmp r7, cjp Iult l6;			/* Yes: end rpt in this band? */
+
+	subr AB r7 r9 RAMF;			/* No: sub lines remaining */
+	add AB r6 r9 RAMF, jmp end_band;
+
+l6:	r9 -> r6;				/* Yes: set line address */
+	0-> r9;					/* Clear repeat */
+
+l5:	M<>-> r0, cjs_Blkno chain_tile;		/* Read data word */
+	test r0, cjp Iz/ l8;			/* Line starts with 0 run? */
+
+	M<>-> r0, cjs_Blkno chain_tile;		/* Yes: read data word */
+	test r0, cjp Iz end_tile;		/* End of tile? */
+
+	r0 -> r9, jmp line_art_rpt;		/* No: */
+
+l8:	r0 cmp r1, cjp Ieq end_line;		/* Blank line? */
+
+	r6 ->IO OBB_LINE_ADDR, ack;		/* No: load line address */
+	r11 ->IO OBB_RUN_ADDR, ack;		/* Load x-posn */
+
+line_art_data:
+	r0 ->IO OBB_RUN_DATA, ack;		/* Load run */
+	M<>-> r0, cjs_Blkno chain_tile;		/* Read run */
+	r0 cmp r1, cjp Ine line_art_data;	/* End of line? */
+
+tile_eol:					/* --End line for 1 tile */
+	dec r5, cjp Iz end_line;		/* Done all tiles? */
+
+	r11 += r3, jmp tile_sol;		/* No: advance x and do next */
+
+end_tile:					/* --End of tile image */
+	'reg_save + 2' E->L;			/* Fetch current image ptr */
+	L<>-> r0;
+
+	TI_PARAM_REC E->D, add DA r0, Y->L;	/* Fetch parameter record */
+	L<>-> r0;
+
+	GR_ADDR_HI E->D, add DA r0, Y->L;	/* Fetch data start address */
+	L<>-> r14;
+	L<>-> r15, jmp tile_sol;
+
+end_line:					/* --End line for all tiles */
+	dec r10, cjp Iz/ l7;			/* Reached rectangle depth? */
+
+	reg_save E->L;				/* Yes: restore registers */
+	L<>-> r3;
+	L<>-> r4;
+	L<>-> r5, jmp remove_tile;		/* and remove tile image */
+
+l7:	inc r6;
+	r6 cmp r7, cjp Ieq end_band;		/* Finished band? */
+
+	r12 -> r14;				/* No: set line data addr */
+	ML-> r15, jmp out_line;
+
+end_band:
+	reg_save E->L;				/* Restore registers */
+	L<>-> r3;
+	L<>-> r4;
+	L<>-> r5;
+
+	GR_ADDR_HI E->D, add DA r5, Y->L;	/* Save line data address */
+	r12 ->L<>;
+	ML->L<>;
+
+	TI_DEPTH E->D, add DA r5, Y->L;		/* Save depth */
+	r10 ->L<>;
+
+	subr1 ZA r2, cjp Iz/ image_alive;	/* Bitmap tile? */
+
+	r9 ->L<>, jmp image_alive;		/* No: save repeat */
+	
+	end;

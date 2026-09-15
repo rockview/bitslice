@@ -1,0 +1,127 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	Miscellaneous routines.
+ *
+ *	Author:	J A Hall
+ *	Date:	13 Feb 87
+ */
+
+segment	misc_rel;
+
+listing	!s;
+include	'comms.h';			/* OBP/GPP communications */
+include	'list.h';			/* Priority/image list */
+include 'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+listing	s;
+
+entry	get_rec, put_rec, poll, poll_delay, ms_wait, not_impl;
+
+eject;
+/*
+ *	GET_REC
+ *
+ *	- Gets a record from the free list.
+ *
+ *	out:
+ *		r0	pointer to new record
+ *
+ *	changed:
+ *		r0 r1 r14 L
+ */
+get_rec:
+	free_rec E->L;				/* Get old free list pointer */
+	L<>-> r0, Y->L, cjp Iz empty;		/* Is list empty? */
+
+	L<>-> r1;		 		/* No: get new list pointer */
+	free_rec E->L;
+	r1 ->L<>, rtn;				/* and write it */
+
+empty:	heap_base E->L;				/* Get heap pointer */
+	L<>-> r0, noinc;
+
+	REC_LEN E->D, add DA r0, Y->L<>, crtn Ic/;/* Update, out of space? */
+
+	F_LIST_OVFL E-> r14;			/* Yes: list overflow error */
+	jmp send_fatal;
+
+eject;
+/* 
+ *	PUT_REC
+ *
+ *	- Puts a record in the free list.
+ *
+ *	in:
+ *		r0	pointer to old record
+ *
+ *	changed:
+ *		r1 L
+ */
+put_rec:
+	free_rec E->L;				/* Get old free list pointer */
+	L<>-> r1, noinc;
+	
+	r0 ->L<>, Y->L;				/* Write new free pointer */
+	r1 ->L<>, rtn;				/* Write old pointer to rec. */
+
+eject;
+/*
+ *	POLL
+ *
+ *	- Polls for an event.  Assumes poll address loaded into main address
+ *	latches.
+ *
+ *	changed:
+ *		r0
+ */
+poll:	M<>->Y, noinc, cjp Iz/ l1;		/* Event occurred? */
+	jsb poll_delay;				/* No: delay before retry */
+	jmp poll;
+
+l1:	M<>->Y, rtn;				/* Yes: increment address */
+
+eject;
+/*
+ *	POLL_DELAY
+ *
+ *	- Just wastes time between testing a polling location.
+ *
+ *	changed:
+ *		r0
+ */
+poll_delay:
+	POLL_DELAY E-> r0;
+	len 10, dec r0, cjp Iz/ '$';
+	rtn;
+
+eject;
+/*
+ *	MS_WAIT
+ *
+ *	- Waits the specified number of milliseconds.  A length 10 instruction
+ *	takes 330 ns or 3030 per millisecond.
+ *
+ *	in:
+ *		r0	wait time (milliseconds)
+ *
+ *	changed:
+ *		r0 r1
+ */
+ms_wait:
+	3030 E-> r1;
+	len 10, dec r1, cjp Iz/ '$';
+	dec r0, cjp Iz/ ms_wait;
+	rtn;
+
+eject;
+/*
+ *	NOT_IMPL
+ *
+ *	- Sends a 'not implemented' fatal error message.  Not a subroutine.
+ */
+not_impl:
+	F_NOT_IMPL E-> r14;
+	jmp send_fatal;
+
+	end;

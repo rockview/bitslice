@@ -1,0 +1,1056 @@
+ /*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test xx - Output Buffer Board.
+ *
+ *	PASS-	Status word of zero, see below.
+ *	FAIL-	Non-zero status word.
+ *
+ *	- This test is described fully in the document called 'OUTPUT BUFFER
+ *	BOARD DIAGNOSTICS' by xxxxx xxxxxxxx, 24/11/88.
+ *
+ *	This is a complicated test, therefore the OBP and SBC communicate via
+ *	a command block in DPM of the following format:
+ *
+ *	Address	Function
+ *
+ *	0	Semaphore
+ *	1	Command
+ *	2	Status
+ *
+ *	The SBC writes a command and sets the semaphore to initiate a test.
+ *	When the test is complete the OBP writes the status word and clears
+ *	the semaphore.
+ *
+ *	Commands as follows:
+ *
+ *	Command Test #	Description
+ *
+ *	1	2	Decoder status
+ *	2-7	3	Access to buffer
+ *	8	4	Full decoder check
+ *	9	5	Acknowledge cycle
+ *
+ *	See individual tests for status return values.
+ *
+ *	Author:	J A Hall
+ *	Date:	11 Dec 88
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test xx, version 1.1';
+
+ERR_LED		equ	b'100000';	/* Error LED */
+
+eject;
+segment	diag, abs(0);
+
+listing	!s;
+include	'obb.h';			/* OBB register definitions */
+listing	s;
+
+org	h'0';
+
+test_wait:
+	0->Y, Y->MCL;
+	M<>->Y, cjp Iz test_wait;		/* Wait for semaphore */
+
+	M<>-> r2;				/* Read command */
+	h'001f' E->D, and DA r2 r2 RAMF;	/* Mask to 5 bits */
+	r2 ->LED;				/* Display command */
+	ERR_LED E->D, or DA r2 r15 RAMF;	/* Save error LED display */
+
+	h'0020' E-> r0;				/* Set source '1' */
+	r0 ->IO RUNMOD;
+
+	5 E-> r0;				/* Wait for run to complete */
+	jsb ms_wait;
+
+	h'0002' E-> r0;				/* Set forward reading */
+	r0 ->IO OUTMOD;
+
+	INC_BAND E-> r10;			/* Advance 2 bands */
+	r10 ->IO RUNLAD;
+	r10 ->IO RUNLAD;
+
+	dec r2, cjp Iz test_2;			/* Yes: 1 */
+
+	dec r2, cjp Iz test_3-1;		/* 2 */
+	dec r2, cjp Iz test_3-2;		/* 3 */
+	dec r2, cjp Iz test_3-3;		/* 4 */
+	dec r2, cjp Iz test_3-4;		/* 5 */
+	dec r2, cjp Iz test_3-5;		/* 6 */
+	dec r2, cjp Iz test_3-6;		/* 7 */
+
+	dec r2, cjp Iz test_4;			/* 8 */
+
+	dec r2, cjp Iz test_5;			/* 9 */
+
+send_error:					/* Send error */
+	r15 ->LED;				/* Display command in error */
+	9 E-> r1;				/* Pop stack */
+	dec r1, cjpp Iz/ '$';
+
+send_status:
+	2 E->MCL;				/* Write status */
+	r0 ->M<>;				
+
+	0->Y, Y->MCL;				/* Clear semaphore */
+	0->M<>, jmp test_wait;
+
+eject;
+/*
+ *	TESTS 2.1 and 2.1
+ *
+ *	- Check operation of status bits. Test 2.1 and 2.2 have been combined 
+ *	together.
+ *
+ *	Set 'line within band' address to 0. Increment band address 14 times
+ *	whilst checking the READY, NOBAND, and NODATA status bits in the
+ *	status register. NOBAND and NODATA should be high once only and READY
+ *	should be low once only. The following status is returned on error:
+ *
+ *		1	NODATA
+ *		2	NOBAND
+ *		3	READY
+ *
+ *	Fall through on pass.
+ *
+ *	usage:
+ *		r2	NODATA active counter
+ *		r3	NOBAND active counter
+ *		r4	READY inactive counter
+ *		r5	band counter
+ *		r6	NODATA bit
+ *		r7	NOBAND bit
+ *		r9	READY bit
+ *		r10	increment band bit
+ */
+test_2:
+test_2-1:
+test_2-2:
+	INC_BAND E-> r10;			/* Intialise registers */
+	NODATA E-> r6;
+	NOBAND E-> r7;
+	READY E-> r9;
+
+	0-> r2;					/* Clear NODATA counter */
+	0-> r3;					/* Clear NOBAND counter */
+	0-> r4;					/* Clear READY counter */
+	0->IO RUNLAD;				/* Set line address 0 */
+	BAND_CNT E-> r5;
+
+l1:	STATUS IO-> r0;				/* Read status */
+
+	and AB r0 r6, cjp Iz l2;		/* NODATA active? */
+	inc r2;					/* Yes: record it */
+
+l2:	and AB r0 r7, cjp Iz l3;		/* NOBAND active? */
+	inc r3;					/* Yes: record it */
+
+l3:	and AB r0 r9, cjp Iz/ l4;		/* READY inactive? */
+	inc r4;					/* Yes: record it */
+
+l4:	r10 ->IO RUNLAD;			/* Increment band address */
+	dec r5, cjp Iz/ l1;			/* Done all bands? */
+
+	dec r2, cjp Iz l5;			/* Yes: NODATA active once? */
+	1 E-> r0;				/* No: return status 1 */
+	jmp send_error;
+
+l5:	dec r3, cjp Iz l6;			/* Yes: NOBAND active once? */
+	2 E-> r0;				/* No: return status 2 */
+	jmp send_error;
+
+l6:	dec r4, cjp Iz test_2-3;		/* Yes: READY active once? */
+	3 E-> r0;				/* No: return status 3 */
+	jmp send_error;
+
+eject;
+/*
+ *	TEST 2.3
+ *
+ *	- Check that run decoder starts and finishes.
+ *
+ *	Increment the band address until READY is high. Output a 256 bit
+ *	black run to buffer in replace mode with a source of '1'. On
+ *	output READY should go low. After 0.5 ms READY should go high.
+ *	The following status is returned on error:
+ *
+ *		4	READY not low on output
+ *		5	READY not high after timeout
+ *
+ *	Fall through on pass.
+ *
+ *	usage:
+ *		r9	READY bit
+ *		r10	increment band bit
+ */
+test_2-3:
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz/ l7;			/* Band READY? */
+
+	r10 ->IO RUNLAD;			/* No: select next one */
+
+l7:	0->IO BITCON;				/* Clear high order run bits */
+	h'0023' E-> r0;				/* Source '1', replace mode */
+	r0 ->IO RUNMOD;
+	0->IO RUNADD;				/* Set run address of zero */
+
+	h'c100' E-> r0;				/* Output black run of 256 */
+	r0 ->IO RUNDAT;
+
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz l8;			/* Band READY? */
+
+	4 E-> r0;				/* Yes: return status 4 */
+	jmp send_error;
+
+l8:	500 E-> r0;				/* Wait 500 us */
+	jsb us_wait;
+
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz/ test_2-4;		/* Band READY? */
+
+	5 E-> r0;				/* No: return status 5 */
+	jmp send_error;
+
+eject;
+/*
+ *	TEST 2.4
+ *
+ *	- Check that the pattern decoder operates.
+ *
+ *	Increment the band address until READY is high. Enable pattern decoder.
+ *	Set up black and white pattern lengths of 11. Output a 256 bit
+ *	black run to buffer in replace mode with a source of '1'. On
+ *	output READY should go low. After 0.5 ms READY should go high.
+ *	The following status is returned on error:
+ *
+ *		6	READY not low on output
+ *
+ *	Fall through on pass.
+ *
+ *	usage:
+ *		r9	READY bit
+ *		r10	increment band bit
+ */
+test_2-4:
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz/ l9;			/* Band READY? */
+
+	r10 ->IO RUNLAD;			/* No: select next one */
+
+l9:	0->IO BITCON;				/* Clear high order run bits */
+	h'0023' E-> r0;				/* Source '1', replace mode */
+	r0 ->IO RUNMOD;
+	0->IO RUNADD;				/* Set run address of zero */
+	h'0b0b' E-> r0;				/* Set white=11, black=11 */
+	r0 ->IO PATRUN;
+	h'0100' E-> r0;				/* Set black intl run of 0 */
+	r0 ->IO INTRUN;
+
+	h'c100' E-> r0;				/* Output black run of 256 */
+	r0 ->IO RUNDAT;
+
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz l10;			/* Band READY? */
+
+l11:	6 E-> r0;				/* Yes: return status 4 */
+	jmp send_error;
+
+l10:	500 E-> r0;				/* Wait 500 us */
+	jsb us_wait;
+
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz l11;			/* Band READY? */
+
+eject;
+/*
+ *	TEST 2.5
+ *
+ *	- Check that the bitmap decoder operates.
+ *
+ *	Increment the band address until READY is high. Enable bitmap decoder.
+ *	Set the word size to 16 and the replication factor to 0. Output a 256
+ *	bit black run to buffer in replace mode with a source of '1'. Check that
+ *	EMPTY goes high. Output data word (AAAA) to the bitmap decoder. On
+ *	output EMPTY should go low. After 2 ms EMPTY should go high. Output 16
+ *	more data words (AAAA). At the end of output READY should go high after
+ *	2 ms. The following status is returned on error:
+ *
+ *		7	EMPTY not low after output
+ *		8	READY not high after timeout
+ *
+ *	Returns status 0 on pass.
+ *
+ *	usage:
+ *		r1	word counter
+ *		r8	EMPTY bit
+ *		r9	READY bit
+ *		r10	increment band bit
+ *		r11	bitmap data word (AAAA)
+ */
+test_2-5:
+	EMPTY E-> r8;
+	
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz/ l12;			/* Band READY? */
+
+	r10 ->IO RUNLAD;			/* No: select next one */
+
+l12:	h'0003' E-> r0;				/* Source bitmap, replace */
+	r0 ->IO RUNMOD;
+	h'00f0' E-> r0;				/* Replication=0, size=16 */
+	r0 ->IO BITCON;
+	0->IO RUNADD;				/* Set run address of zero */
+
+	h'c100' E-> r0;				/* Set black run of 256 */
+	r0 ->IO RUNDAT;
+
+	STATUS IO->D, and DA r8 r0 RAMF;
+	test r0, cjp Iz/ l16;			/* Line EMPTY? */
+
+l13:	7 E-> r0;				/* No: return status 7 */
+	jmp send_error;
+
+l16:	h'AAAA' E-> r11;			/* Load bitmap word */
+	r11 ->IO BITDAT;
+
+	STATUS IO->D, and DA r8 r0 RAMF;
+	test r0, cjp Iz/ l13;			/* Line EMPTY? */
+
+	2 E-> r0;				/* No: wait 2 us */
+	jsb us_wait;				
+
+	STATUS IO->D, and DA r8 r0 RAMF;
+	test r0, cjp Iz l13;			/* Line EMPTY? */
+
+	16 E-> r1;				/* Yes: */
+l14:	r11 ->IO BITDAT;			/* Load bitmap word */
+
+l15:	STATUS IO->D, and DA r8 r0 RAMF;	/* Loop wait for decoder */
+	test r0, cjp Iz l15;
+	
+	dec r1, cjp Iz/ l14;			/* Loaded all words? */
+
+	2 E-> r0;				/* Yes: wait 2 us */
+	jsb us_wait;				
+
+	STATUS IO->D, and DA r9 r0 RAMF;
+	test r0, cjp Iz l17;			/* Band READY? */
+
+	0-> r0, jmp send_status;		/* Yes: return status 0 */
+
+l17:	8 E-> r0;				/* No: return status 8 */
+	jmp send_error;
+
+eject;
+/*
+ *	TESTS 3.2, 3.3, 3.4, 3.5, and 3.6
+ *
+ *	- Access to buffer.
+ *
+ *	These tests load all the line buffers with different data and line
+ *	lengths. Values as follows:
+ *
+ *		Test	Data	Length (kbits)	Status
+ *
+ *		3.2	0000	32		0- pass, 1-fail
+ *		3.3	ffff	32		0- pass, 1-fail
+ *		3.4	0000	64		0- pass, 1-fail
+ *		3.5	ffff	64		0- pass, 1-fail
+ *		3.6	0000	64		Loops without reporting status
+ *		3.7	ffff	64		Loops without reporting status
+ *
+ *	usage:
+ *		r2	combination mode
+ *		r3	high order run bits
+ */
+test_3-1:
+	h'0024' E-> r2;				/* Source '1', not replace */
+	h'7fff' E-> r4;				/* Set 32kbit run length */
+	jsb write_buffer;
+	0-> r0, jmp send_status;
+
+test_3-2:
+	h'0023' E-> r2;				/* Source '1', replace */
+	h'7fff' E-> r4;				/* Set 32kbit run length */
+	jsb write_buffer;
+	0-> r0, jmp send_status;
+
+test_3-3:
+	h'0024' E-> r2;				/* Source '1', not replace */
+	h'ffff' E-> r4;				/* Set 64kbit run length */
+	jsb write_buffer;
+	0-> r0, jmp send_status;
+
+test_3-4:
+	h'0023' E-> r2;				/* Source '1', replace */
+	h'ffff' E-> r4;				/* Set 64kbit run length */
+	jsb write_buffer;
+	0-> r0, jmp send_status;
+
+test_3-5:
+	h'0024' E-> r2;				/* Source '1', not replace */
+	h'c000' E-> r3;				/* Set 64kbit run length */
+	jmp loop_test;
+
+test_3-6:
+	h'0023' E-> r2;				/* Source '1', replace */
+	h'c000' E-> r3;				/* Set 64kbit run length */
+	jmp loop_test;
+
+eject;
+/*
+ *	WRITE_BUFFER
+ *
+ *	- Writes all lines in all bands.
+ *
+ *	Writes a run to every line of every buffer (224 lines). 5ms after
+ *	a run is written READY should go high. The following status is returned:
+ *
+ *		1	READY not high after timeout
+ *		0	pass
+ *
+ *	usage:
+ *		r2	combination mode
+ *		r4	run
+ *		r5	band count
+ *		r6	number of lines
+ *		r7	current line
+ *		r8	run start address
+ *		r10	increment band bit
+ */
+write_buffer:
+	0-> r8;					/* Run starts at 0 */
+
+	INC_BAND E-> r10;			/* Intialise registers */
+	BAND_CNT E-> r5;
+
+l20:	jsb write_band;				/* Write band */
+
+	r10 ->IO RUNLAD;			/* Yes: bump band address */
+	dec r5, cjp Iz/ l20;			/* Done all bands? */
+
+	rtn;					/* Yes: */
+
+eject;
+/*
+ *	WRITE_BAND
+ *
+ *	- Writes a band of lines into current band.
+ *
+ *	in:
+ *		r2	combination mode
+ *		r4	run
+ *		r8	run start address
+ *
+ *	usage:
+ *		r6	number of lines
+ *		r7	current line
+ */
+write_band:
+	LINE_CNT E-> r6;
+	0-> r7;					/* Reset line address */
+	
+l21:	jsb write_line;				/* Write line */
+
+	inc r7;					/* Bump line address */
+	r6 cmp r7, cjp Ine l21;			/* Done all lines? */
+
+	rtn;					/* Yes: */
+
+eject;
+/*
+ *	WRITE_LINE
+ *
+ *	- Writes one line into current band. Returns status 1 on error.
+ *
+ *	in:
+ *		r2	combination mode
+ *		r4	run
+ *		r7	line address
+ *		r8	run start address
+ */
+write_line:
+	r2 ->IO RUNMOD;				/* Load combination mode */
+	h'c000' E->D, and DA r4 r0 RAMF;	/* Load high run bits */
+	r0 ->IO BITCON;
+	r7 ->IO RUNLAD;				/* Load line address */
+	r8 ->IO RUNADD;				/* Load run address */
+	h'c000' E->D, or DA r4 r0 RAMF;		/* Load run */
+	r0 ->IO RUNDAT;
+	
+	5 E-> r0;				/* Wait 5ms */
+	jsb ms_wait;
+
+	STATUS IO-> r0;				/* Read status */
+	READY E-> r1;
+	and AB r0 r1, crtn Iz/;			/* Band READY? */
+
+	NOBAND E-> r1;
+	and AB r0 r1, crtn Iz/;			/* No: NOBAND active? */
+
+	1 E-> r0;				/* No: return status 1 */
+	jmp send_error;
+
+eject;
+/*
+ *	LOOP_TEST
+ *
+ *	- Performs loop access to buffer test.
+ *
+ *	Writes a run to every line of every buffer (224 lines) continuously.
+ *
+ *	usage:
+ *		r2	combination mode
+ *		r3	high order run bits
+ *		r4	maximum run
+ *		r5	band count
+ *		r6	number of lines
+ *		r7	current line
+ *		r9	READY bit
+ *		r10	increment band bit
+ */
+loop_test:
+	h'ffff' E-> r4;				/* Maximum run */
+	r2 ->IO RUNMOD;				/* Load combination mode */
+	r3 ->IO BITCON;				/* Load high run bits */
+
+	INC_BAND E-> r10;			/* Intialise registers */
+	READY E-> r9;
+	LINE_CNT E-> r6;
+retest:
+	BAND_CNT E-> r5;
+
+l22:	0-> r7;
+	
+l23:	r7 ->IO RUNLAD;				/* Load line address */
+	0->IO RUNADD;				/* Load run address of zero */
+	r4 ->IO RUNDAT;				/* Load run */
+	
+	5 E-> r0;				/* Wait 5ms */
+	jsb ms_wait;
+
+	inc r7;					/* Bump line address */
+	r6 cmp r7, cjp Ine l23;			/* Done all lines? */
+
+	r10 ->IO RUNLAD;			/* Yes: bump band address */
+	dec r5, cjp Iz/ l22;			/* Done all bands? */
+
+	jmp retest;				/* Yes: repeat test */
+
+eject;
+/*
+ *	TEST 4
+ *
+ *	- Full decoder check. Clear all buffers, including temporary buffers.
+ *
+ *	Returns the following staus on error:
+ *
+ *		1	READY not high after timeout
+ *
+ *	usage:
+ *		r2	combination mode
+ *		r4	maximum run
+ */
+test_4:	h'0024' E-> r2;				/* Clear output buffers */
+	h'ffff' E-> r4;
+	jsb write_buffer;
+
+	h'00a4' E-> r2;				/* Clear temp buffer 0 */
+	h'ffff' E-> r4;
+	jsb write_band;
+
+	h'00e4' E-> r2;				/* Clear temp buffer 1 */
+	h'ffff' E-> r4;
+	jsb write_band;
+
+eject;
+/*
+ *	TEST 4, cntd.
+ *
+ *	- Test run decoder.
+ *
+ *	Writes the following runs into band 0.
+ *
+ *		Line	Addr	Run	Run	Run	Buffer
+ *
+ *		0	0	lb1	-	-	80 00 00 00
+ *		1	0	lb8	-	-	ff 00 00 00
+ *		2	3	lb8	-	-	1f e0 00 00
+ *		3	0	lw0	lb0	-	00 00 00 00
+ *		4	0	lb16	-	-	ff ff 00 00
+ *		5	3	lb16	-	-	1f ff e0 00
+ *		6	0	lw7	lb8	s8,8	01 fe 01 fe
+ *
+ *	where:
+ *		lb	long format black run
+ *		lw	long format white run
+ *		s	short format run
+ *
+ *	Returns status 1 if run decoder not working.
+ *
+ *	usage:
+ *		r3	error return status
+ *		r4	run
+ *		r7	line address
+ *		r8	run start address
+ */
+	RES_BAND E-> r0;			/* Set band 0 */
+	r0 ->IO RUNLAD;
+	0->IO RUNLAD;
+
+	1 E-> r3;				/* Set error return status */
+
+	h'0023' E-> r0;				/* Source '1', replace */
+	r0 ->IO RUNMOD;
+	0->IO BITCON;				/* Clear high run bits */
+
+	h'c001' E-> r4;				/* Long black 1 */
+	0 E-> r7;				/* Line 0 */
+	0 E-> r8;				/* Address 0 */
+	jsb first_run;
+
+	h'c008' E-> r4;				/* Long black 8 */
+	1 E-> r7;				/* Line 1 */
+	0 E-> r8;				/* Address 0 */
+	jsb first_run;
+
+	h'c008' E-> r4;				/* Long black 8 */
+	2 E-> r7;				/* Line 2 */
+	3 E-> r8;				/* Address 3 */
+	jsb first_run;
+
+	h'8000' E-> r4;				/* Long white 0 */
+	3 E-> r7;				/* Line 3 */
+	0 E-> r8;				/* Address 0 */
+	jsb first_run;
+	h'c000' E-> r4;				/* Long black 0 */
+	jsb next_run;
+
+	h'c010' E-> r4;				/* Long black 16 */
+	4 E-> r7;				/* Line 4 */
+	0 E-> r8;				/* Address 0 */
+	jsb first_run;
+
+	h'c010' E-> r4;				/* Long black 16 */
+	5 E-> r7;				/* Line 5 */
+	3 E-> r8;				/* Address 3 */
+	jsb first_run;
+
+	h'8007' E-> r4;				/* Long white 7 */
+	6 E-> r7;				/* Line 6 */
+	0 E-> r8;				/* Address 0 */
+	jsb first_run;
+	h'c008' E-> r4;				/* Long black 8 */
+	jsb next_run;
+	h'0408' E-> r4;				/* Short 8, 8 */
+	jsb next_run;
+
+eject;
+/*
+ *	TEST 4, cntd.
+ *
+ *	- Test pattern decoder.
+ *
+ *	Writes the following patterned runs into band 1.
+ *
+ *		Line	Addr	Initial	Black	White	Mask	Buffer
+ *
+ *		0	0	b40	40	40	32	ff ff ff ff
+ *		1	0	w1	40	40	32	7f ff ff ff
+ *		2	0	w8	40	40	32	00 ff ff ff
+ *		3	0	w40	0	0	32	00 00 00 00
+ *		4	0	w11	40	40	32	00 1f ff ff
+ *		5	0	w40	40	40	32	00 00 00 00
+ *		6	0	b3	3	3	32	e3 8e 38 e3
+ *		7	0	b8	8	8	32	ff 00 ff 00
+ *		8	0	b11	11	11	32	ff e0 03 ff
+ *
+ *	where:
+ *		b	black
+ *		w	white
+ *
+ *	Returns status 2 if pattern decoder stops run decoder.
+ *
+ *	usage:
+ *		r3	error return status
+ *		r4	run
+ *		r7	line address
+ *		r8	run start address
+ */
+	INC_BAND E-> r0;			/* Increment to band 1 */
+	r0 ->IO RUNLAD;
+
+	h'c020' E-> r4;				/* Long black 32 */
+
+	h'2828' E-> r0;				/* Load pattern runs b40 w40 */
+	r0 ->IO PATRUN;
+
+	h'0228' E-> r3;				/* Load initial b40 */
+	0 E-> r7;				/* Line 0 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'0001' E-> r3;				/* Load initial w1 */
+	1 E-> r7;				/* Line 1 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'0008' E-> r3;				/* Load initial w8 */
+	2 E-> r7;				/* Line 2 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'0000' E-> r0;				/* Load pattern runs b0 w0 */
+	r0 ->IO PATRUN;
+
+	h'0028' E-> r3;				/* Load initial w40 */
+	3 E-> r7;				/* Line 3 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'2828' E-> r0;				/* Load pattern runs b0 w0 */
+	r0 ->IO PATRUN;
+
+	h'000b' E-> r3;				/* Load initial w11 */
+	4 E-> r7;				/* Line 4 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'0028' E-> r3;				/* Load initial w40 */
+	5 E-> r7;				/* Line 5 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'0303' E-> r0;				/* Load pattern runs b3 w3 */
+	r0 ->IO PATRUN;
+
+	h'0203' E-> r3;				/* Load initial b3 */
+	6 E-> r7;				/* Line 6 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'0808' E-> r0;				/* Load pattern runs b8 w8 */
+	r0 ->IO PATRUN;
+
+	h'0208' E-> r3;				/* Load initial b8 */
+	7 E-> r7;				/* Line 7 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+	h'0b0b' E-> r0;				/* Load pattern runs b11 w11 */
+	r0 ->IO PATRUN;
+
+	h'020b' E-> r3;				/* Load initial b11 */
+	8 E-> r7;				/* Line 8 */
+	0 E-> r8;				/* Address 0 */
+	jsb pattern_run;
+
+eject;
+/*
+ *	TEST 4, cntd.
+ *
+ *	- Test bitmap decoder.
+ *
+ *	Writes the following bitmap runs into band 2.
+ *
+ *		Line	Addr	Rep	Data	Run	Buffer
+ *
+ *		0	0	0	aaaa	32	aa aa aa aa
+ *		1	7	0	aaaa	25	01 55 55 55
+ *		2	0	1	aaaa	32	cc cc cc cc
+ *		3	0	0	0000	32	00 00 00 00
+ *		4	0	2	aaaa	32	e3 8e 38 e3
+ *
+ *	and writes the following bitmap runs into band 3 via temporary buffers
+ *	0 and 1 respectively.
+ *
+ *		Line	Addr	Rep	Data	Run	Buffer
+ *
+ *		0	0	0	aaaa	32	aa aa aa aa
+ *		1	0	0	aaaa	32	aa aa aa aa
+ *
+ *	Returns status 3 if bitmap decoder stops run decoder.
+ *
+ *	usage:
+ *		r3	bitmap control bits
+ *		r4	run
+ *		r5	bitmap word count
+ *		r7	line address
+ *		r8	run start address
+ */
+	INC_BAND E-> r0;			/* Increment to band 2 */
+	r0 ->IO RUNLAD;
+
+	h'0003' E-> r0;				/* Source bitmap, replace */
+	r0 ->IO RUNMOD;
+
+	h'00f0' E-> r3;				/* Word size 16, rep 0 */
+	h'c020' E-> r4;				/* Long black 32 */
+	3 E-> r5;				/* 3 bitmap words */
+	0 E-> r7;				/* Line 0 */
+	0 E-> r8;				/* Address 0 */
+	h'aaaa' E-> r1;				/* Set bitmap data */
+	jsb bitmap_run;
+
+	h'00f0' E-> r3;				/* Word size 16, rep 0 */
+	h'c019' E-> r4;				/* Long black 25 */
+	3 E-> r5;				/* 3 bitmap words */
+	1 E-> r7;				/* Line 1 */
+	7 E-> r8;				/* Address 7 */
+	jsb bitmap_run;
+
+	h'00f1' E-> r3;				/* Word size 16, rep 1 */
+	h'c020' E-> r4;				/* Long black 32 */
+	2 E-> r5;				/* 2 bitmap words */
+	2 E-> r7;				/* Line 2 */
+	0 E-> r8;				/* Address 0 */
+	jsb bitmap_run;
+
+	h'00f0' E-> r3;				/* Word size 16, rep 0 */
+	h'c020' E-> r4;				/* Long black 32 */
+	3 E-> r5;				/* 3 bitmap words */
+	3 E-> r7;				/* Line 3 */
+	0 E-> r8;				/* Address 0 */
+	h'0000' E-> r1;				/* Set bitmap data */
+	jsb bitmap_run;
+
+	h'00f2' E-> r3;				/* Word size 16, rep 2 */
+	h'c020' E-> r4;				/* Long black 32 */
+	1 E-> r5;				/* 1 bitmap word */
+	4 E-> r7;				/* Line 4 */
+	0 E-> r8;				/* Address 0 */
+	h'aaaa' E-> r1;				/* Set bitmap data */
+	jsb bitmap_run;
+
+	h'0083' E-> r0;				/* Bitmap, replace, temp 0 */
+	r0 ->IO RUNMOD;
+
+	h'00f0' E-> r3;				/* Word size 16, rep 0 */
+	h'c020' E-> r4;				/* Long black 32 */
+	3 E-> r5;				/* 3 bitmap words */
+	0 E-> r7;				/* Line 0 */
+	0 E-> r8;				/* Address 0 */
+	jsb bitmap_run;
+
+	h'00c3' E-> r0;				/* Bitmap, replace, temp 1 */
+	r0 ->IO RUNMOD;
+
+	h'00f0' E-> r3;				/* Word size 16, rep 0 */
+	h'c020' E-> r4;				/* Long black 32 */
+	3 E-> r5;				/* 3 bitmap words */
+	1 E-> r7;				/* Line 1 */
+	0 E-> r8;				/* Address 0 */
+	jsb bitmap_run;
+
+	INC_BAND E-> r0;			/* Increment to band 3 */
+	r0 ->IO RUNLAD;
+	1 E-> r3;				/* Set error return status 1 */
+
+	h'001b' E-> r0;				/* Temp 0, replace, output */
+	r0 ->IO RUNMOD;
+
+	h'c020' E-> r4;				/* Long black 32 */
+	0 E-> r7;				/* Line 0 */
+	0 E-> r8;				/* Address 0 */
+	jsb first_run;
+
+	h'005b' E-> r0;				/* Temp 1, replace, output */
+	r0 ->IO RUNMOD;
+
+	h'c020' E-> r4;				/* Long black 32 */
+	1 E-> r7;				/* Line 1 */
+	0 E-> r8;				/* Address 0 */
+	jsb first_run;
+
+	0-> r0, jmp send_status;
+
+eject;
+/*
+ *	BITMAP_RUN
+ *
+ *	- Writes a bitmap run.
+ *
+ *	in:
+ *		r1	bitmap data
+ *		r3	bitmap control bits
+ *		r4	run
+ *		r5	bitmap word count
+ *		r7	line address
+ *		r8	run start address
+ */
+bitmap_run:
+	r3 ->IO BITCON;				/* Load control bits */
+	r7 ->IO RUNLAD;				/* Load line address */
+	r8 ->IO RUNADD;				/* Load run address */
+	r4 ->IO RUNDAT;				/* Load run */
+
+l19:	r1 ->IO BITDAT;
+	
+	10 E-> r0;				/* Wait 10 us */
+	jsb us_wait;
+
+	dec r5, cjp Iz/ l19;			/* Yes: loaded all words? */
+
+	READY E-> r0;
+	STATUS IO->D, and DA r0, crtn Iz/;	/* Yes: band READY? */
+
+	3 E-> r0;				/* No: return error status */
+	jmp send_error;
+
+eject;
+/*
+ *	PATTEN_RUN
+ *
+ *	- Writes a patterned run into a line.
+ *
+ *	in:
+ *		r3	initial run
+ *		r4	run
+ *		r7	line address
+ *		r8	run start address
+ */
+pattern_run:
+	r7 ->IO RUNLAD;				/* Load line address */
+	r8 ->IO RUNADD;				/* Load run address */
+	r3 ->IO INTRUN;				/* Load initial run */
+	r4 ->IO RUNDAT;				/* Load run */
+	
+	10 E-> r0;				/* Wait 10 us */
+	jsb us_wait;
+
+	READY E-> r0;
+	STATUS IO->D, and DA r0 r0 RAMF;
+	test r0, crtn Iz/;			/* Band READY? */
+
+	3 E-> r0;
+	jmp send_error;				/* No: return error status 3 */
+
+eject;
+/*
+ *	FIRST_RUN
+ *
+ *	- Writes the first run into a line.
+ *
+ *	in:
+ *		r3	error return status
+ *		r4	run
+ *		r7	line address
+ *		r8	run start address
+ */
+first_run:
+	r7 ->IO RUNLAD;				/* Load line address */
+	r8 ->IO RUNADD;				/* Load run address */
+	r4 ->IO RUNDAT;				/* Load run */
+	
+	10 E-> r0;				/* Wait 10 us */
+	jsb us_wait;
+
+	READY E-> r0;
+	STATUS IO->D, and DA r0 r0 RAMF;
+	test r0, crtn Iz/;			/* Band READY? */
+
+	r3 -> r0, jmp send_error;		/* No: return error status */
+
+eject;
+/*
+ *	NEXT_RUN
+ *
+ *	- Writes subsequent runs into a line.
+ *
+ *	in:
+ *		r3	error return status
+ *		r4	run
+ */
+next_run:
+	r4 ->IO RUNDAT;				/* Load run */
+	
+	10 E-> r0;				/* Wait 10 us */
+	jsb us_wait;
+
+	READY E-> r0;
+	STATUS IO->D, and DA r0 r0 RAMF;
+	test r0, crtn Iz/;			/* Band READY? */
+
+	r3 -> r0, jmp send_error;		/* No: return error status */
+
+eject;
+/*
+ *	TEST 5
+ *
+ *	- Acknowledge cycle.
+ *
+ *	Increment band address until READY goes high. If READY doesn't go high
+ *	after the band address has been incremented 14 times abort the test.
+ *	When READY goes high access the band address using an ACK cycle. If the
+ *	cycle fails the test will timeout and the bitslice will be restarted
+ *	with a TF interrupt.
+ *
+ *	usage:
+ *		r5	band counter
+ *		r9	READY bit
+ *		r10	increment band bit
+ */
+test_5:	INC_BAND E-> r10;			/* Initialise registers */
+	READY E-> r9;
+	BAND_CNT E-> r5;
+
+l25:	STATUS IO-> r0;				/* Read status */
+	and AB r0 r9, cjp Iz/ l24;		/* READY active? */
+
+	r10 ->IO RUNLAD;			/* No: increment band */
+
+	dec r5, cjp Iz/ l25;			/* Done all bands? */
+
+	1 E-> r0;				/* Yes: return status 1 */
+	jmp send_error;
+
+l24:	r10 ->IO RUNLAD, ack;			/* ACK cycle */
+
+	0-> r0, jmp send_status;		/* Return status 0 */
+
+eject;
+/*
+ *	US_WAIT
+ *
+ *	- Waits the specified number of microseconds.  A length 10 instruction
+ *	takes 330 ns or about 3 per microsecond.
+ *
+ *	in:
+ *		r0	wait time (microseconds)
+ *
+ *	changed:
+ *		r0
+ */
+us_wait:
+	len 10, cont;
+	len 10, cont;
+	len 10, dec r0, cjp Iz/ us_wait;
+	rtn;
+
+eject;
+/*
+ *	MS_WAIT
+ *
+ *	- Waits the specified number of milliseconds.  A length 10 instruction
+ *	takes 330 ns or 3030 per millisecond.
+ *
+ *	in:
+ *		r0	wait time (milliseconds)
+ *
+ *	changed:
+ *		r0 r1
+ */
+ms_wait:
+	3030 E-> r1;
+	len 10, dec r1, cjp Iz/ '$';
+	dec r0, cjp Iz/ ms_wait;
+	rtn;
+
+org	h'fff';
+
+	jz;					/* Boot/TF interrupt via here */
+
+	end;

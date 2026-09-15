@@ -1,0 +1,10 @@
+#
+#	Makefile for output bitslice processor micro instruction definitions.
+#	Version 1.1.
+#	
+#	Author:	J A Hall
+#	Date:	14 Jan 87
+#
+
+obp.def :	obp.mdl
+		mmd -d obp obp -le

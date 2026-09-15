@@ -1,0 +1,71 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Local memory variables.  The order of local ram variables is
+ *	important and shouldn't be changed lightly.  Note, the 2-word value
+ *	image_base is stored low word low address.  Variable pat_type is
+ *	used to avoid performing a complicated test on pattern type for each
+ *	image at a given priority.  Values as follows:
+ *
+ *		0	no pattern
+ *		1	normal a b pattern
+ *		2	flat tint
+ *		3	jumbled number
+ *
+ *	Author:	J A Hall
+ *	Date:	13 Feb 87
+ */
+
+segment	loc_abs, abs(0);
+
+listing	!s;
+include	'list.h';			/* Priority/image list */
+listing	s;
+
+entry	offset, image_base, death_len, death_1;
+entry	death_2, death_cnt, death_next, death_curr, free_rec;
+entry	heap_base, pl_head, pl_curr, line_no, list_addr;
+entry	request_no, pat_type, curr_pri, reg_save, pat_scans;
+entry	pat_skip, off_by_one, above_point, below_addr, unsorted_edges;
+entry	unsorted_ints, next_int, winding, intercepts;
+
+org	h'0';
+
+offset:		reserve 1;	/* Forward/reverse reading offset */
+
+image_base:	reserve 2;	/* Image memory base address */
+
+death_len:	reserve 1;	/* Death buffer length */
+death_1:	reserve 1;	/* Image death buffer 1 */
+death_2:	reserve 1;	/* Image death buffer 2 */
+death_cnt:	reserve 1;	/* Current number of deaths in buffer */
+death_next:	reserve 1;	/* Points to next free position in buffer */
+death_curr:	reserve 1;	/* Current death buffer */
+
+free_rec:	reserve 1;	/* Points to record free list */
+heap_base:	reserve 1;	/* Points to heap base */
+
+pl_head:	reserve	REC_LEN;/* Priority list head */
+pl_curr:	reserve	1;	/* Current priority record */
+
+line_no:	reserve 2;	/* Current scan-line number */
+list_addr:	reserve 2;	/* Current addition list address */
+request_no:	reserve 2;	/* Addition list request line number */
+
+pat_type:	reserve 1;	/* Current pattern type */
+
+curr_pri:	reserve 5;	/* Current priority save */
+reg_save:	reserve 16;	/* General register save */
+
+pat_scans:	reserve	1;	/* Flags patterned scan conversion image */
+pat_skip:	reserve 1;	/* Flags line skip in patterned image */
+off_by_one:	reserve 5;	/* Save off-by-one values */
+above_point:	reserve 4;	/* Above point */
+below_addr:	reserve 2;	/* Below point address */
+unsorted_edges:	reserve 1;	/* Flags unsorted edges */
+unsorted_ints:	reserve 1;	/* Flags unsorted intercepts */
+next_int:	reserve 1;	/* Current intercept insertion point */
+winding:	reserve 1;	/* Winding array */
+intercepts:	reserve 1;	/* Intercept/run buffer */
+
+	end;

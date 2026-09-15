@@ -1,0 +1,178 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 11 - Main low address latch read and 128 word block boundary 
+ *		detection.
+ *
+ *	PASS-	Write zero to control word (locn 0), number of 64Kw pages
+ *		to locn 5, and interrupt.
+ *	FAIL-	Write register values to the following locns and interrupt:
+ *			0	Control word:
+ *					1- address latch read failed
+ *					2- block detect failed
+ *			1	-
+ *			2	Data read from latch
+ *			3	Most significant address
+ *			4	Least significant address
+ *			5	Number of 64Kw pages of main memory
+ *
+ *	- All locations in main ram are read which sequences the address
+ *	latch.  Before each read the main memory low address latch is read
+ *	and compared against an internally maintained value.  The block 
+ *	boundary detect instruction is then executed.  If the boundary is
+ *	detected a routine is called which simply sets a non-zero value in
+ *	a previously zeroed register.  After the block boundary instruction
+ *	is executed this register can be examined to determine if the routine
+ *	was called.  The low order 7-bits of the address are then checked for 
+ *	all 1 or not all 1 depending on whether the routine should be called 
+ *	on a block boundary or not on a block boundary, respectively.
+ *
+ *	- Main memory size is determined by reading bits 1 and 0 in
+ *	status register.  These are attached to jumpers LK7 and LK6 
+ *	on the board and should be set according to the size of installed
+ *	memory for this test to work properly.  Values as follows:
+ *	    bit-10
+ *		11	1Mw (2Mb)
+ *		10	2Mw (4Mb)
+ *		01	3Mw (6Mb)
+ *		00	4Mw (8Mb)
+ *	where:
+ *		1- jumper removed, 0- jumper installed.
+ *
+ *	This can be converted to the number of 64Kw pages as follows:
+ *		bit values-			11	10	01	00
+ *		invert, mask bits, shift up 1	00	02	04	06
+ *		shift up 2			00	08	16	24
+ *		add 8 and shift up 1		16	32	48	64
+ *
+ *	Author:	J A Hall
+ *	Date:	12 May 87
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 11, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	11;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	L_INTR E-> r15;			/* Load interrupt bit for later */
+	TEST_LED E-> r14;		/* Show test number */
+	r14 ->LED;
+
+	/* Compute memory size */
+	S_MS_MSK E-> r5;
+	STAT->D, notrs DA r5 r5 RAMU, shift <0;
+	add AB r5 r5 RAMU, shift <0;
+	h'8' E->D, add DA r5 r5 RAMU, shift <0;
+
+/* ---------------------- Low address latch read test  ---------------------- */
+	0-> r3, Y->MH;
+	0-> r4, Y->ML;
+
+l1:	ML-> r2;				/* Read address latch */
+	r2 cmp r4, cjp Ine read_fail;		/* What we expected? */
+	M<>->Y;					/* Yes: Read to inc address */
+
+	inc r4, cjp Iz/ l1;			/* Finished page ? */
+
+	inc r3;					/* Bump page counter */
+	r3 cmp r5, cjp Ine l1;			/* Finished all pages ? */
+
+/* -------------- Initialise memory for block boundary detect  -------------- */
+	h'007F' E-> r1;				/* Set address mask */
+	0-> r2;
+	0-> r3, Y->MH;
+	0-> r4, Y->ML;
+
+l3:	add1 ZA r4 r0 RAMF;
+	and AB r0 r1, cjp Iz/ l4;		/* At last word in block? */
+
+	add1 ZA r2 r2 RAMF, Y->M<>, jmp l5;	/* Yes: store next block no */
+
+l4:	h'ffff' E->M<>;				/* No: store -1 */
+
+l5:	inc r4, cjp Iz/ l3;			/* Finished page ? */
+
+	inc r3;					/* Yes: bump page counter */
+	r3 cmp r5, cjp Ine l3;			/* Finished all pages ? */
+
+/* ------------------- Perform block boundary detect test  ------------------ */
+	1 E-> r2;
+	0-> r3, Y->MH;
+	0-> r4, Y->ML;
+
+l6:	M<>-> r0, cjs_Blkno test_addr;		/* Read memory and test block */
+
+	inc r4, cjp Iz/ l6;			/* Finished page ? */
+
+	inc r3;					/* Yes: bump page counter */
+	r3 cmp r5, cjp Ine l6;			/* Finished all pages ? */
+
+	r5 -> r0, phlc 8;			/* Compute number of blocks */
+	or ZA r0 r0 RAMU, shift <0, rfct;	/* = 512 * number pages     */
+	inc r0;
+
+	r2 cmp r0, cjp Ine blk_fail;		/* Detected the right # blks? */
+
+	0->Y, Y->MCL;				/* Test passed */
+	0->M<>;					/* Write zero to control word */
+
+	5 E->ML;				/* Write number of 64Kw pages */
+	r5 ->M<>;
+	
+	r15 ->LED;				/* Generate interrupt */
+	r14 ->LED;				/* Clear interrupt */
+	jmp '$';				/* Loop forever */
+
+eject;
+/*
+ *	TEST_ADDR
+ *
+ *	- This routine should be called after a 128 word boundary condition
+ *	is detected.  The value of the last word in a block is compared against
+ *	an internally stored value. If different the test has failed.
+ *
+ *	in:
+ *		r0	value read from last word in the block
+ *		r2	next block number
+ */
+test_addr:
+	r0 cmp r2, cjp Ine blk_fail;		/* Read the correct value? */
+	inc r2, rtn;				/* Yes: bump block count */
+
+blk_fail:
+	2 E-> r0;				/* Block detect failed */
+	jmp fail;
+
+read_fail:
+	1 E-> r0;				/* Address latch read failed */
+
+	/* Test failed, write register values to main memory */
+fail:	0->Y, Y->MCL;
+	r0 ->M<>;				/* 0: Control word */
+	0->M<>;					/* 1: - */
+	r2 ->M<>;				/* 2: Data read from latch */
+	M_BASE_PAGE E->D, add DA r3, Y->M<>;	/* 3: Page number */
+	r4 ->M<>;				/* 4: Page address */
+	r5 ->M<>;				/* 5: Number of pages */
+
+	r15 ->LED;				/* Generate interrupt */
+	ERR_LED E-> r14;			/* Clear int., show error */
+	r14 ->LED;
+
+	/* Loop passing register values to the Y bus so as to aid debugging */
+disp:	r2 ->Y;					/* Data read from latch */
+	r3 ->Y;					/* Page number */
+	r4 ->Y;					/* Page address */
+	r5 ->Y, jmp disp;			/* Number of pages */
+
+org	h'fff';
+
+	jz;					/* Boot/TF interrupt via here */
+
+	end;

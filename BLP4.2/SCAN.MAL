@@ -1,0 +1,1592 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Scan converted image support.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4
+ *	+----------------------------------+
+ *	|  4   | skip | edge | dict |  x   |
+ *	|      |      |blkno |index |      |
+ *	+----------------------------------+
+ *
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next |  4   | skip |  edge list  | dict |  x   |param |  x   |  y   |
+ *	|      |      |      |   address   |index |      | rec  |phase |phase |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Parameter record:
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| edge |  scanline   | next max y  |nxt edge addr|blank |  sentinel   |
+ *	|cnt *2|             |             |  lo     hi  |repeat|edge address |
+ *	+---------------------------------------------------------------------+
+ *
+ *	This algorithm is very largely based on Paul Hudson's CDP. The main
+ *	difference being that I'm using a slightly different edge description.
+ *
+ *	The image description is passed as a sequence of edges hereafter called
+ *	the edge list. An edge is a sequence of straight lines between a maximum
+ *	and a minimum. Since y increases downwards, a maximum is a vertex of
+ *	minimum y-value. Edges are sorted by increasing maximum order. This
+ *	corresponds to their processing order.
+ *
+ *	When a scan conversion addition record is passed to the OBP it contains
+ *	the block number of a memory buffer to be used for the construction of
+ *	an active edge list for the image. This buffer is made large enough to
+ *	contain an address for every edge in the image + 1. This is the worst
+ *	case. Each address is 2 words long and stored in low word low address 
+ *	order. The OBP requires that the buffer is contiguous in memory, i.e.
+ *	if it exceeds the capacity of 1 block (128 words) it occupies successive
+ *	blocks. The OBP makes no attempt at block chaining when using this
+ *	buffer. It also requires the the buffer doesn't cross a 64kw boundary.
+ *	Most scan conversion images, especially characters, will normally
+ *	require just a single block.
+ *
+ *	The first entry in the active edge list is left unmodified so that it
+ *	can be used by the GPP to free up the edge list when the image dies.
+ *
+ *	Initially the first entry in the active edge list contains the address
+ *	of the first edge in the edge list. The edge list is constructed by the
+ *	CDP. Each edge has a header, which initially is almost empty, and a
+ *	vertex coordinate list. The header is used as work-space by the OBP when
+ *	an edge is being processed. The edge list is allocated in memory as a
+ *	series of chained 128 word blocks. The last entry in each block contains
+ *	the block number of the next block. The OBP requires that the edge
+ *	header and the first coordinate point fit entirely within a block,
+ *	although the remaining coordinates may cross blocks in an arbitary way.
+ *	The CDP ensures this by skipping on to a new block if it detects that
+ *	the header would otherwise cross a block boundary.
+ *
+ *	An edge has the following format:
+ *
+ *	header-
+ *	 0	end-y (hi)			end point of current line
+ *	 1	end-y (lo)
+ *	 2	x
+ *	 3	e (lo)				note order reversal
+ *	 4	e (hi)
+ *	 5	x pos incr
+ *	 6	e pos incr (lo)			note order reversal
+ *	 7	e pos incr (hi)
+ *	 8	x neg incr
+ *	 9	e neg incr (lo)			note order reversal
+ *	10	e neg incr (hi)
+ *	11	type				supplied by CDP, dir. + path no
+ *	12	end address (hi)
+ *	13	end address (lo)
+ *	14	next edge address (hi)		supplied by CDP, byte address,
+ *	15	next edge address (lo)		sentinel for last edge (0)
+ *
+ *	coordinate list -
+ *	16	first point-x (hi)
+ *	17	first point-x (lo)
+ *	18	first point-y (hi)
+ *	19	first point-y (lo)
+ *		.
+ *		.
+ *		repeated for each point
+ *		.
+ *		.
+ *		sentinel-x (hi) (ffff)
+ *
+ *	The type field contains the path number in the low 14 bits and the edge
+ *	direction in bit 15, 0- up, 1- down. Bit 14 is used later to hold the
+ *	the edge type, 0- left, 1- right.
+ *
+ *	The first edge is a dummy used as a sentinel and for passing parameters.
+ *	There is no coordinate list in the dummy edge. The values in the dummy
+ *	edge are passed in the following positions:
+ *
+ *	 0	fill type			(pixel-centred-0, off-by-one-1)
+ *	 1	path count
+ *	 2	left x				sentinal x-value
+ *	 3	clip left
+ *	 4	clip right
+ *	 5	clip top
+ *	 6	clip bottom
+ *	14	next edge address (hi)
+ *	15	next edge address (lo)
+ *	16	fill rules array
+ *	17-	...
+ *
+ *	The OBP requires the dummy edge to be contiguous like the edge list
+ *	buffer.
+ *	
+ *	All the addresses passed to the OBP are given as byte addresses in high
+ *	byte low address order. The OBP converts these to word addresses.
+ *
+ *	Author:	J A Hall
+ *	Date:	12 Feb 89
+ */
+
+segment	scan_rel;
+
+listing	!s;
+include	'addr.h';			/* Image block number conversion */
+include	'char.h';			/* Character support */
+include	'death.h';			/* Image death handling */
+include	'in_list.h';			/* Addition list */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'math.h';			/* Arithmetic support */
+include	'misc.h';			/* Miscellaneous routines */
+include 'obb.h';			/* OBB register definitions */
+include	'out_band.h';			/* Band output */
+include 'pattern.h';			/* Patterning support */
+include	'phase.h';			/* Initial pattern/tint phase calc. */
+include	'scan_impl.h';			/* Scan conversion private */
+listing	s;
+
+entry	in_scan, out_scan, pat_scan;
+
+eject;
+/*
+ *	IN_SCAN
+ *
+ *	- Inputs a scan conversion record. Not a subroutine.
+ *
+ *	in:
+ *		r2	current scanline address (hi)
+ *		r3	current scanline address (lo)
+ *		r5	current image list record
+ *		r7	current priority record
+ *		r10	image skip count
+ *		r15	forward/reverse reading offset
+ *
+ *	in use:
+ *		r4 r6 r8 r9
+ *
+ *	changed:
+ *		r0 r1 r13 L M
+ */
+in_scan:
+	jsb in_char_start;			/* Process rec. as character */
+
+	jsb get_rec;				/* Get parameter record */
+	SC_PARAM_REC E->D, add DA r5, Y->L;	/* and link it */
+	r0 -> r13, Y->L<>, jsb fix_addr;
+
+	GR_ADDR_HI E->D, add DA r5, Y->L;	/* Load edge list address */
+	L<>->MH;
+	L<>-> r1, noinc, Y->ML;
+	2 E->D, add DA r1, Y->L<>;		/* and advance it by 2 */
+
+	M<>-> r0;				/* Fetch sentinel edge addr. */
+	M<>->Q;
+	or ZA r0 r0 RAMQD, shift 0>>;		/* and make word address */
+
+	Q->M<>;					/* Save word swapped in the  */
+	HI_ADDR_MASK E->D, and DA r0 r0 RAMF, Y->M<>, Y->MH;/* next buf loc. */
+
+	SC_SENT_ADDR E->D, add DA r13, Y->L;	/* and in the parameter rec */
+	Q->L<>;
+	r0 ->L<>, Y->MH;
+
+	EG_NEXT_EDGE E->D, add DQ, Y->ML;	/* Fetch next edge address */
+	M<>-> r0;
+	M<>->Q;
+	or ZA r0 r0 RAMQD, shift 0>>;		/* make word address */
+	SC_NEXT_EDGE E->D, add DA r13, Y->L;
+	Q->L<>;					/* and save it word swapped */
+	HI_ADDR_MASK E->D, and DA r0, Y->L<>, Y->MH;
+
+	EG_MAX_Y E->D, add DQ, Y->ML;		/* Copy next maximum-y */
+	SC_MAX_Y E->D, add DA r13, Y->L;
+	M<>->L<>, D-> r0;
+	M<>->L<>, D-> r1, jsb next_fp_int;
+
+	r13 ->L;				/* Set edge count to sentinel */
+	2 E->L<>;
+
+	r0 ->L<>;				/* Save scanline */
+	r1 ->L<>, jsb fp_to_int;
+
+	SC_REPEAT E->D, add DA r13, Y->L;	/* Set initial blank repeat */
+	r1 ->L<>;
+	
+	list_addr E->L;				/* Reload main address latch */
+	L<>->MH;
+	L<>->ML;
+	
+	SC_X E->D, add DA r5, Y->L;		/* Fetch x-posn */
+	L<>-> r0, jmp calc_phase;
+
+eject;
+/*
+ *	NEXT_FP_INT
+ *
+ *	- Returns the next highest integer value from a fixed point number as a
+ *	fixed point number. This has the effect of aligning a y-value to the
+ *	next scanline.
+ *
+ *	in:
+ *		r0	fixed point number (hi)
+ *		r1	fixed point number (lo)
+ *
+ *	out:
+ *		r0	next highest fixed point integer (hi)
+ *		r1	next highest fixed point integer (lo)
+ *
+ *	changed:
+ *		r0 r1
+ */
+next_fp_int:
+	FP_FRAC_MASK E->D, add DA r1 r1 RAMF, I->M;
+	addMc ZA r0 r0 RAMF;
+	FP_FRAC_MASK E->D, notrs DA r1 r1 RAMF, rtn;
+
+eject;
+/*
+ *	FP_TO_INT
+ *
+ *	- Returns the integer part from a fixed point number as a 32-bit
+ *	integer.
+ *
+ *	in:
+ *		r0	fixed point number (hi)
+ *		r1	fixed point number (lo)
+ *
+ *	out:
+ *		r0	integer number (hi)
+ *		r1	integer number (lo)
+ *
+ *	changed:
+ *		r0 r1 Q
+ */
+fp_to_int:
+	r1 ->Q, phlc 'FP_PLACES - 1';
+	or ZA r0 r0 RAMQD, shift 0>>, rfct;
+	Q-> r1, rtn;
+
+eject;
+/*
+ *	INT_TO_FP
+ *
+ *	- Returns the fixed point equivalent of a 16-bit integer.
+ *
+ *	in:
+ *		r1	integer number (lo)
+ *
+ *	out:
+ *		r0	fixed point number (hi)
+ *		r1	fixed point number (lo)
+ *
+ *	changed:
+ *		r0 r1 Q
+ */
+int_to_fp:
+	0-> r0;
+	r1 ->Q, phlc 'FP_PLACES - 1';
+	or ZA r0 r0 RAMQU, shift <<0, rfct;
+	Q-> r1, rtn;
+
+eject;
+/*
+ *	OUT_SCAN/PAT_SCAN
+ *
+ *	- Outputs a band of scan lines for scan converted images. Not a
+ *	subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	in use:
+ *		r3 r4		
+ *
+ *	usage:
+ *		r4	active list pointer
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *		r8	edge count
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *
+ *	changed:
+ *		r0 r1 r2 r3 r4 r6 r8 r9 r10 r11 Q L M
+ */
+out_scan:
+	pat_scans E->L;				/* Flag no patterning */
+	0->L<>;
+	0->L<>, jmp l36;			/* and no line skipping */
+
+pat_scan:
+	pat_scans E->L;				/* Flag patterning */
+	1 E->L<>;
+
+l36:	SC_PARAM_REC E->D, add DA r5, Y->L;	/* Fetch param rec address */
+	L<>-> r11;
+
+	SC_REPEAT E->D, add DA r11, Y->L;	/* Fetch blank repeat */
+	L<>-> r0, noinc, cjp Iz l30;		/* Skip blank lines? */
+
+	subs AB r7 r6 QREG;			/* Yes: compute lines left */
+
+	r0 cmpQ, cjp Iult skip_end;		/* End of skip in band? */
+	subs AQ r0, Y->L<>, jmp image_alive;	/* No: write new skip count */
+
+skip_end:
+	0->L<>;					/* Yes: clear skip */
+	add AB r0 r6 RAMF, jsb phase_skip;	/* Set line address */
+l30:	r11 ->L;
+	L<>-> r8;				/* Fetch edge count */
+	L<>-> r9;				/* Fetch scanline hi */
+	L<>-> r10;				/* Fetch scanline lo */
+
+	SC_SENT_ADDR E->D, add DA r11, Y->L;	/* Initialise intercept */
+	L<>-> r0;				/* buffer sentinel */
+	L<>->MH;
+	SE_LEFT_X E->D, add DA r0, Y->ML;
+	intercepts E->L;
+	M<>->L<>;
+
+next_line:
+	SC_MAX_Y E->D, add DA r11, Y->L;
+	L<>-> r0;				/* Fetch max-y hi */
+	L<>-> r1;				/* Fetch max-y lo */
+
+	2 E-> r2;
+	r2 cmp r8, cjp Ieq skip_blanks;		/* Active list empty? */
+	
+skip_blanks_rtn:
+	r6 ->IO OBB_LINE_ADDR, ack;		/* Load line address */
+	SC_X E->D, add DA r5, Y->L;		/* Load run start address */
+	L<>-> r2;
+	r2 ->IO OBB_RUN_ADDR, ack;
+
+	pat_scans E->L;				/* Patterning? */
+	L<>->Y, cjp Iz l62;
+
+	r8 -> r0;				/* Yes: save edge count */
+	r2 -> r8, jsb calc_pat;			/* Compute patterns */
+	pat_skip E->L;				/* Save skip flag */
+	r1 ->L<>, jsb inc_pat;			/* Update vertical phase */
+	r0 -> r8;				/* restore edge count */
+
+	SC_MAX_Y E->D, add DA r11, Y->L;
+	L<>-> r0;				/* Fetch max-y hi */
+	L<>-> r1;				/* Fetch max-y lo */
+
+l62:	curr_pri E->L;				/* Save register values */
+	r3 ->L<>;
+	r4 ->L<>;
+	r5 ->L<>;
+	r6 ->L<>;
+	r7 ->L<>;
+
+	unsorted_edges E->L;
+	0->L<>;					/* Clear unsorted edges */
+	0->L<>;					/* Clear unsorted intercepts */
+	'intercepts + 2' E->L<>;		/* Set int pointer to 2nd */
+
+	GR_ADDR_HI E->D, add DA r5, Y->L;	/* Fetch active list address */
+	L<>-> r14;
+	L<>-> r15;
+
+	jsb add_active_edges;
+	jsb calc_ints;
+
+	pat_skip E->L;				/* Skip patterned scans? */
+	L<>->Y, cjp Iz/ emit_runs_rtn;
+
+	unsorted_edges E->L;			/* No: any unsorted edges? */
+	L<>->Y, cjs Iz/ sort_edges;
+
+	unsorted_ints E->L;			/* Any unsorted intercepts? */
+	L<>->Y, cjs Iz/ sort_ints;
+
+	SC_SENT_ADDR E->D, add DA r11, Y->L;
+	L<>->ML;
+	L<>->MH;
+	M<>->Y, cjp Iz/ emit_off_by_one_runs;	/* Off-by-one filling? */
+	jmp emit_pixel_centre_runs;		/* No: */
+	
+emit_runs_rtn:
+	FP_ONE E->D, add DA r10 r10 RAMF, I->M;	/* Advance to next scanline */
+	addMc ZA r9 r9 RAMF;
+
+	curr_pri E->L;				/* Restore register values */
+	L<>-> r3;
+	L<>-> r4;
+	L<>-> r5;
+	L<>-> r6;
+	L<>-> r7;
+
+	inc r6;					/* No: bump line address */
+	r6 cmp r7, cjp Ieq end_band;		/* Finished band? */
+
+	jmp next_line;				/* No: output another line */
+
+eject;
+/*
+ *	SKIP_BLANKS
+ *
+ *	- There are currently no active edges. This occurs when either a gap
+ *	in the image is encountered, e.g. in a letter i, or the image has
+ *	finished. Not a subroutine.
+ *
+ *	in:
+ *		r0	max-y (hi)
+ *		r1	max-y (lo)
+ *		r6	line address
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *
+ *	in use:
+ *		r3 r4 r5 r7 r8
+ *
+ *	changed:
+ *		r6 r9 r10 r12 r13 Q L
+ */
+skip_blanks:
+	FP_MAX_HI E-> r12;
+	r0 cmp r12, cjp Ieq remove_scan;	/* Equal to sentinel? */
+
+	r10 -> r13;				/* Set scanline to next max-y */
+	r9 -> r12, jsb next_fp_int;
+	r1 -> r10;
+	r0 -> r9;
+
+	subr AB r13 r1 RAMF, Ic/->M;		/* Compute blank lines */
+	subrMc AB r12 r0 RAMF, jsb fp_to_int;
+
+	subs AB r7 r6 QREG;			/* Compute lines left in band */
+
+	r1 cmpQ, cjp Iult l1;			/* End of skip in this band? */
+
+	SC_REPEAT E->D, add DA r11, Y->L;	/* No: save blank repeat */
+	subs AQ r1, Y->L<>, jmp end_band;
+
+l1:	add AB r1 r6 RAMF, jsb phase_skip;	/* Yes: update line address */
+	jmp skip_blanks_rtn;
+
+eject;
+/*
+ *	END_BAND
+ *
+ *	- Save register values at the end of a band. Not a subroutine.
+ *
+ *	in:
+ *		r8	edge count
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *
+ *	changed:
+ *		L
+ */
+end_band:
+	r11 ->L;
+	r8 ->L<>;				/* Save edge count */
+	r9 ->L<>;				/* Save scanline hi */
+	r10 ->L<>, jmp image_alive;		/* Save scanline lo */
+
+eject;
+/*
+ *	ADD_ACTIVE_EDGES
+ *
+ *	- Adds any new edges that will intercept the current scanline. 
+ *
+ *	in:
+ *		r0	max-y (hi)
+ *		r1	max-y (lo)
+ *		r5	current image pointer
+ *		r8	edge count
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *
+ *	usage:
+ *		r0	max-y (hi)
+ *		r1	max-y (lo)
+ *		r5	current image pointer
+ *		r8	edge count
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *
+ *	changed:
+ *		r0 r1 r2 r8 r14 r15 Q L M
+ */
+add_active_edges:
+	r0 cmp r9, crtn Iugt;			/* Reached next maximum yet? */
+	r0 cmp r9, cjp Iult l35;
+	r1 cmp r10, crtn Iugt;
+
+l35:	SC_NEXT_EDGE E->D, add DA r11, Y->L;	/* Yes: load next active edge */
+	r14 ->MH;				/* address */
+	add AB r8 r15, Y->ML;
+	L<>-> r1;				/* Copy next edge */
+	r1 ->M<>;
+	L<>-> r0;
+	r0 ->M<>, Y->MH;
+
+	2 E->D, add DA r8 r8 RAMF;		/* Bump edge count */
+
+	r1 ->ML;				/* Save end-y */
+	SC_MAX_Y E->D, add DA r11, Y->L;
+	L<>-> r2;
+	r2 ->M<>;
+	L<>-> r2;
+	r2 ->M<>;
+
+	h'ffff' E->M<>;				/* Save invalid x flag */
+
+	EG_END_ADDR E->D, add DA r1, Y->ML;	/* Initialise end address */
+	r0 ->M<>;
+	EG_FIRST_POINT E->D, add DA r1, Y->M<>;
+
+	M<>-> r0;				/* Fetch next edge address */
+	M<>->Q;
+	or ZA r0 r0 RAMQD, shift 0>>;		/* make word address */
+	SC_NEXT_EDGE E->D, add DA r11, Y->L;
+	Q->L<>;					/* and save it word swapped */
+	HI_ADDR_MASK E->D, and DA r0, Y->L<>, Y->MH;
+
+	SC_MAX_Y E->D, add DA r11, Y->L;
+
+	testQ, cjp Iz/ l3;			/* At last edge in list? */
+	test r0, cjp Iz/ l3;
+
+	FP_MAX_HI E->L<>, rtn;			/* Yes: set high max value */
+
+l3:	EG_MAX_Y E->D, add DQ, Y->ML;		/* No: fetch max from */
+	M<>->L<>, D-> r0;			/* next edge in list */
+	M<>->L<>, D-> r1, jmp add_active_edges;	/* and save it */
+
+eject;
+/*
+ *	CALC_INTS
+ *
+ *	- Calculates the intercepts for the current line.
+ *
+ *	in:
+ *		r8	edge count
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *
+ *	in use:
+ *		r11
+ *
+ *	usage:
+ *		r2	previous x
+ *		r4	edge list index
+ *		r8	edge count
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *		r12	current edge (hi)
+ *		r13	current edge (lo)
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *
+ *	changed:
+ *		r0 r1 r2 r3 r4 r8 r12 r13 Q L M
+ */
+calc_ints:
+	0-> r2;					/* Initialise */
+	2 E-> r4;
+
+ci_next_edge:
+	r4 cmp r8, crtn Iuge;			/* End active list? */
+	r14 ->MH;				/* No: fetch edge address */
+	add AB r15 r4, Y->ML;
+	M<>-> r13;
+	M<>-> r12, Y->MH;			/* Fetch segment end-y */
+	r13 ->ML;
+
+	M<>-> r0;
+	M<>-> r1;
+
+	r0 cmp r9, cjp Iugt l2;			/* New edge? */
+	r0 cmp r9, cjp Iult l4;
+	r1 cmp r10, cjp Iugt l2;
+
+l4:	jsb start_new_segment;			/* Yes: */
+
+	test r0, cjp Iz/ check_order;		/* Did edge die? */
+
+	2 E->D, subr DA r8 r8 RAMF;		/* Yes: decrement edge count */
+	add AB r8 r15 QREG;			/* Compute active list end */
+	r14 ->MH;
+	r15 -> r3;
+	add AB r4 r3 RAMF;			/* Set temporary pointer */
+
+shuffle:
+	r3 cmpQ, cjp Iuge ci_next_edge;		/* At end of active list? */
+
+	2 E->D, add DA r3, Y->ML;		/* No: shuffle element down */
+	M<>-> r0;
+	M<>-> r1;
+
+	2 E->D, add DA r3 r3 RAMA, Y->ML;
+	r0 ->M<>;
+	r1 ->M<>, jmp shuffle;
+
+check_order:
+	r12 ->MH;				/* Fetch current x value */
+	EG_X E->D, add DA r13, Y->ML;
+	M<>-> r0;
+
+	r0 cmp r2, cjp Iuge l5;			/* Current x < previous x? */
+	unsorted_edges E->L;			/* Yes: */
+	1 E->L<>;
+
+l5:	2 E->D, add DA r4 r4 RAMF;
+	r0 -> r2, jmp ci_next_edge;
+
+l2:	M<>->Q;					/* Fetch x */
+
+	M<>-> r1;				/* Fetch e */
+	M<>-> r0;
+
+	test r0, cjp In/ l6;			/* e -ve? */
+
+	EG_X_NEG_INCR E->D, add DA r13, Y->ML;	/* Yes: */
+
+l6:	M<>->D, add DQ rX r3 RAMF;		/* x += xpos/xneg */
+
+	M<>->D, add DA r1 r1 RAMF, I->M;	/* e += epos/eneg */
+	M<>->D, addMc DA r0 r0 RAMF;
+
+	EG_X E->D, add DA r13, Y->ML;		/* Save x */
+	r3 ->M<>;
+
+	r1 ->M<>;				/* Save e */
+	r0 ->M<>;
+
+	SC_SENT_ADDR E->D, add DA r11, Y->L;
+	L<>->ML;
+	L<>->MH;
+	M<>->Y, cjs Iz/ add_int_pair;		/* Off-by-one filling? */
+
+	jmp check_order;
+
+eject;
+/*
+ *	ADD_INT_PAIR
+ *
+ *	- Adds an intercept pair to the intercept buffer. Used only for 
+ *	off-by-one filling.
+ *
+ *	in:
+ *		r3	intercept 1
+ *		r12	current edge (hi)
+ *		r13	current edge (lo)
+ *		Q	intercept 2
+ *
+ *	usage:
+ *		r0	edge type
+ *		r1	new edge type
+ *		r3	intercept 1
+ *		r12	current edge (hi)
+ *		r13	current edge (lo)
+ *		Q	intercept 2
+ *
+ *	changed:
+ *		r0 r1 r3 Q L M
+ */
+add_int_pair:
+	r3 cmpQ, cjp Iule l7;			/* int 1 > int 2? */
+
+	r3 -> r0;				/* Yes: swap values */
+	Q-> r3;
+	r0 ->Q;
+
+l7:	next_int E->L;				/* Bump next int pointer */
+	L<>-> r1, noinc;
+	4 E->D, add DA r1, Y->L<>;
+
+	2 E->D, subr DA r1, Y->L;
+	r3 cmpL<>, cjp Iuge l8;			/* Last int < current int? */
+
+	unsorted_ints E->L;			/* Yes: */
+	1 E->L<>;
+
+l8:	r12 ->MH;				/* Fetch edge type */
+	EG_TYPE E->D, add DA r13, Y->ML;
+	M<>-> r0;
+
+	r1 ->L;
+	r3 ->L<>;				/* Save int 1 */
+	r0 ->L<>;				/* Save type */
+
+	add1 ZQ, Y->L<>;			/* Save int 2 */
+	RIGHT_EDGE E->D, or DA r0, Y->L<>, rtn;	/* Save type */
+
+eject;
+/*
+ *	SORT_EDGES
+ *
+ *	- Sort edges in the active list in order of x intercept. Typically
+ *	they will be near sorted, so isertion sort is used.
+ *
+ *	in:
+ *		r8	edge count
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *
+ *	in use:
+ *		r9 r10 r11
+ *
+ *	usage:
+ *		r0	current edge-x
+ *		r3	compare pointer
+ *		r4	active list pointer
+ *		r8	edge count
+ *		r12	current edge (hi)
+ *		r13	current edge (lo)
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *		Q	active list end
+ *
+ *	changed:
+ *		r0 r1 r2 r3 r12 r13 Q M
+ */
+sort_edges:
+	4 E->D, add DA r15 r4 RAMF;		/* Set active pointer to 2nd */
+	add AB r8 r15 QREG;			/* Compute active list end */
+
+se_next_edge:
+	r4 cmpQ, crtn Iuge;			/* At end of list? */
+
+	2 E->D, subr DA r4 r3 RAMF;		/* No: set compare pointer */
+
+	r14 ->MH;				/* Fetch edge address */
+	2 E->D, add DA r4 r4 RAMA, Y->ML;
+	M<>-> r13;
+	M<>-> r12, Y->MH;
+
+	EG_X E->D, add DA r13, Y->ML;		/* Fetch edge x-value */
+	M<>-> r0;
+
+l9:	r14 ->MH;				/* Fetch compare edge address */
+	r3 ->ML;
+	M<>-> r1;
+	M<>->MH;
+
+	EG_X E->D, add DA r1, Y->ML;		/* Fetch compare edge x-value */
+	M<>-> r1;
+
+	r1 cmp r0, cjp Iule l10;		/* Edges in order? */
+
+	r14 ->MH;				/* No: load compare edge addr */
+	2 E->D, subr DA r3 r3 RAMA, Y->ML;
+
+	M<>-> r1;				/* Move entry up list */
+	M<>-> r2;
+	r1 ->M<>;
+	r2 ->M<>, jmp l9;
+
+l10:	r14 ->MH;				/* Save edge address */
+	2 E->D, add DA r3, Y->ML;
+	r13 ->M<>;
+	r12 ->M<>, jmp se_next_edge;
+
+eject;
+/*
+ *	SORT_INTS
+ *
+ *	- Sort the intercepts. Typically they will be near sorted, so insertion 
+ *	sort is used.
+ *
+ *	in use:
+ *		r8 r9 r10 r11 r14 r15
+ *
+ *	usage:
+ *		r0	compare intercept x
+ *		r1	compare intercept type
+ *		r2	current intercept pointer
+ *		r3	compare pointer
+ *		r12	current intercept x
+ *		r13	current intercept type
+ *		Q	intercept end
+ *
+ *	changed:
+ *		r0 r1 r2 r3 r12 r13 Q M
+ */
+sort_ints:
+	'intercepts + 2' E-> r2;		/* Set current intercept addr */
+	next_int E->L;				/* Set intercept end */
+	L<>->Q;
+
+l12:	r2 cmpQ, crtn Iuge;			/* At end of intercepts? */
+
+	r2 ->L;
+	L<>-> r12;				/* Fetch intercept x */
+	L<>-> r13;
+	r2 -> r3;
+
+l13:	2 E->D, subr DA r3 r3 RAMF, Y->L;	/* Set compare pointer */
+	L<>-> r0;
+	L<>-> r1;
+
+	r0 cmp r12, cjp Iule l11;		/* Intercept misorder? */
+
+	r0 ->L<>;				/* Yes: move intercept up */
+	r1 ->L<>, jmp l13;
+
+
+l11:	2 E->D, add DA r2 r2 RAMF;		/* Advance intercept pointer */
+
+	r12 ->L<>;				/* Save current intercept */
+	r13 ->L<>, jmp l12;
+
+eject;
+/*
+ *	START_NEW_SEGMENT
+ *
+ *	- Changes a line segment in the edge. This may involve skipping
+ *	several short line segments before either the edge ends or we find one
+ *	that crosses the current scanline. Assumes main address high latch 
+ *	loaded for current edge header.
+ *
+ *	in:
+ *		r9	scanline (hi)
+ *		r10	scanline (lo)
+ *		r11	param rec
+ *		r12	current edge (hi)
+ *		r13	current edge (lo)
+ *
+ *	in use:
+ *		r2 r4 r5 r6 r7 r8 r14 r15
+ *
+ *	usage:
+ *		r0	below-y (lo), dy (lo), e_corr (hi)
+ *		r1	below-y (hi), dy (hi), e_corr (lo)
+ *		r2	below-x (lo), dx (lo), x_rem (hi)
+ *		r3	below-x (hi), dx (hi), x_rem (lo)
+ *		r4	min-x (hi), x_step (hi), min-x (hi)
+ *		r5	min-x (lo), x_step (lo), min-x (lo)
+ *		r6	max-x (hi), abs_dx (hi), int_x (16 bit), max-x (hi)
+ *		r7	max-x (lo), abs_dx (lo), max-x (lo)
+ *		r8	x, above_x (hi), dx (hi)
+ *		r9	scanline (hi), dx (lo)
+ *		r10	scanline (lo), dy (hi)
+ *		r11	param rec, fill type, dy (lo)
+ *		r12	current edge (hi), end point (hi), above-y (hi), a (hi)
+ *		r13	current edge (lo), above-y (lo), a (lo)
+ *		r14	current edge (hi), above-x (hi), int-x (hi)
+ *		r15	above-x (lo), above-x (lo), int-x (lo)
+ *
+ *	changed:
+ *		r0 r1 Q L M
+ */
+start_new_segment:
+	'reg_save + 2' E->L;			/* Save registers */
+	r2 ->L<>;
+	r3 ->L<>;
+	r4 ->L<>;
+	r5 ->L<>;
+	r6 ->L<>;
+	r7 ->L<>;
+	r8 ->L<>;
+	r9 ->L<>;
+	r10 ->L<>;
+	r11 ->L<>;
+	r12 ->L<>;
+	r13 ->L<>;
+	r14 ->L<>;
+	r15 ->L<>;
+
+	SC_SENT_ADDR E->D, add DA r11, Y->L;	/* Fetch fill type */
+	L<>->ML;
+	L<>->MH;
+	M<>-> r11;
+
+	r12 ->MH;				/* Fetch current-x and make */
+	EG_X E->D, add DA r13, Y->ML;		/* fixed point		    */
+	0-> r0;
+	M<>-> r8;
+	r8 -> r1, jsb int_to_fp;
+
+	r0 -> r4;				/* Save as min-x */
+	r1 -> r5;
+	r0 -> r6;				/* Save as max-x */
+	r1 -> r7;
+
+	EG_END_ADDR E->D, add DA r13, Y->ML;	/* Read segment end point */
+	M<>-> r12;
+	M<>->ML;
+	r12 ->MH, jsb read_point;
+
+	add1 ZA r8, cjp Iz/ next_point;		/* Is x valid? */
+
+	r2 -> r5;				/* No: use start-x for min-x */
+	r3 -> r4;
+	r2 -> r7;				/* and max-x */
+	r3 -> r6;
+
+next_point:
+	above_point E->L;			/* Save above point */
+	r3 ->L<>;
+	r2 ->L<>;
+	r1 ->L<>;
+	r0 ->L<>;
+
+	r12 ->L<>;				/* Save below point address */
+	ML->L<>, jsb read_point;		/* Read next point */
+
+	test r11, cjp Iz l14;			/* Off-by-one filling? */
+
+	above_point E->L;			/* Yes: fetch above */
+	L<>-> r8;
+	L<>-> r15;
+
+	r4 cmp r8, cjp Iult l15;		/* Min-x > above-x? */
+	r4 cmp r8, cjp Iugt l16;
+	r5 cmp r15, cjp Iule l15;
+
+l16:	r8 -> r4;				/* Yes: save new min-x */
+	r15 -> r5;
+
+l15:	dec r15, Ic/->M;			/* Decrement above-x by 1 */
+	subrMc ZA r8 r8 RAMF;
+
+	r6 cmp r8, cjp Iugt l14;		/* Max-x < above-x - 1? */
+	r6 cmp r8, cjp Iult l17;
+	r7 cmp r15, cjp Iuge l14;
+
+l17:	r8 -> r6;				/* Yes: save as max-x */
+	r15 -> r7;
+
+l14:	add1 ZA r3, cjp Iz/ l18;		/* End of edge? */
+
+	test r11, cjp Iz l19;			/* Yes: off-by-one filling? */
+
+	'reg_save + 12' E->L;			/* Yes: restore edge address */
+	L<>-> r12;
+	L<>-> r13;
+
+	r4 -> r0;				/* Truncate min-x */
+	r5 -> r1, jsb fp_to_int;
+	r1 -> r3;
+
+	r6 -> r0;				/* Truncate max-x */
+	r7 -> r1, jsb fp_to_int;
+
+	r1 ->Q, jsb add_int_pair;		/* Add intercept pair */
+
+l19:	0-> r0;					/* Mark edge as dead */
+
+restore_reg:
+	'reg_save + 2' E->L;			/* Restore registers */
+	L<>-> r2;
+	L<>-> r3;
+	L<>-> r4;
+	L<>-> r5;
+	L<>-> r6;
+	L<>-> r7;
+	L<>-> r8;
+	L<>-> r9;
+	L<>-> r10;
+	L<>-> r11;
+	L<>-> r12;
+	L<>-> r13;
+	L<>-> r14;
+	L<>-> r15, rtn;
+
+l18:	r1 cmp r9, cjp Iult next_point;		/* Below-y <= scanline? */
+	r1 cmp r9, cjp Iugt l20;
+	r0 cmp r10, cjp Iule next_point;
+
+l20:	off_by_one E->L;			/* Yes: save fill type */
+	r11 ->L<>, cjp Iz l26;			/* Off-by-one filling? */
+
+	r4 ->L<>;				/* Yes: save min-x */
+	r5 ->L<>;
+	
+	r6 ->L<>;				/* Save max-x */
+	r7 ->L<>;
+	
+l26:	'reg_save + 12' E->L;			/* Save segment end-y */
+	L<>->MH;
+	L<>-> r13, Y->ML;
+	r1 ->M<>;
+	r0 ->M<>;
+
+	EG_END_ADDR E->D, add DA r13, Y->ML;	/* Save segment end address */
+	below_addr E->L;
+	L<>-> r14;
+	r14 ->M<>;
+	L<>-> r14;
+	r14 ->M<>;
+
+	above_point E->L;			/* Fetch above-x */
+	L<>-> r14;
+	L<>-> r15;
+	L<>-> r12;
+	L<>-> r13;
+
+	subr AB r15 r2 RAMF, Ic/->M;		/* dx = below-x - above-x;    */
+	subrMc AB r14 r3 RAMF;
+
+	subr AB r13 r0 RAMF, Ic/->M;		/* dy = below-y - above-y;    */
+	subrMc AB r12 r1 RAMF;
+
+	subs AB r10 r13 RAMF, Ic/->M;		/* a = scanline - above-y;    */
+	subsMc AB r9 r12 RAMF;
+
+	r0 -> r11;				/* Move dy */
+	r1 -> r10;
+	r2 -> r9;				/* Move dx */
+	r3 -> r8, cjp In/ l21;			/* if (dx < 0)		      */
+
+	subs ZA r9 r7 RAMF, Ic/->M;		/*   abs_dx = -dx;	      */
+	subsMc ZA r8 r6 RAMF, jmp l22;
+						/* else			      */
+l21:	r9 -> r7;				/*   abs_dx = dx;	      */
+	r8 -> r6;
+
+l22:	r13 -> r0;				/* b = a * abs_dx;	      */
+	r7 -> r1, jsb umult;
+	r1 -> r5;
+	r0 -> r4;
+
+	r13 -> r0;
+	r6 -> r1, jsb umult;
+	add AB r1 r4 RAMF, I->M;
+	addMc ZA r0 r3 RAMF;
+
+	r12 -> r0;
+	r6 -> r1, jsb umult;
+	add AB r1 r3 RAMF, I->M;
+	addMc ZA r0 r2 RAMF;
+
+	r12 -> r0;
+	r7 -> r1, jsb umult;
+	add AB r1 r4 RAMF, cjp Ic l48;
+	add AB r0 r3 RAMF, cjp Ic/ l49;
+l51:	add1 ZA r2 r2 RAMF, jmp l49;
+l48:	add1 AB r0 r3 RAMF, cjp Ic l51;
+
+l49:	r5 ->Q;					/* b = b / dy;		      */
+	r10 -> r0;
+	r11 -> r1, jsb div64;
+
+	test r8, cjp In/ l33;			/* if (dx < 0)		      */
+
+	subs AQ r15 r15 RAMF, Ic/->M;		/*   int_x = above_x - b;     */
+	subrMc AB r4 r14 RAMF, jmp l34;
+						/* else			      */
+l33:	add AQ r15 r15 RAMF, I->M;		/*   int_x = above_x + b;     */
+	addMc AB r4 r14 RAMF;
+
+l34:	r6 cmp r10, cjp Iugt l59;		/* if (abs_dx < dy) {	      */
+	r6 cmp r10, cjp Iult l60;
+	r7 cmp r11, cjp Iuge l59;
+l60:	0-> r5;					/*   x_step = 0;	      */
+	r6 -> r2;				/*   x_rem = abs_dx;          */
+	r7 -> r3, jmp l61;			/* }			      */
+						/* else {		      */
+l59:	r10 -> r0;				/*   x_step = abs_dx / dy;    */
+	r11 -> r1;				/*   x_rem = abs_dx % dy;     */
+	0-> r2;					/* }			      */
+	0-> r3;
+	r6 -> r4;
+	r7 ->Q, jsb div64;
+	Q-> r5;
+
+l61:	r14 -> r0;				/* x = int_x >> DP;	      */
+	r15 -> r1, jsb fp_to_int;
+	r1 -> r6;
+
+	FP_FRAC_MASK E->D, and DA r15 r1 RAMF;	/* e_corr = (dy * frac(x_int))*/
+	r10 -> r0, jsb umult;			/*	    >> DP;	      */
+	r1 -> r13;
+	FP_FRAC_MASK E->D, and DA r15 r1 RAMF;
+	r11 -> r0, jsb umult;
+	add AB r13 r0 RAMF, jsb fp_to_int;
+
+	'reg_save + 12' E->L;			/* Save x */
+	L<>-> r12, Y->MH;
+	L<>-> r13;
+	EG_X E->D, add DA r13, Y->ML;
+	r6 ->M<>;
+	
+	test r8, cjp In/ l23;			/* if (dx < 0) {	      */
+
+	subs AB r3 r1, Ic/->M, Y->M<>;		/*   e = x_rem - e_corr;      */
+	subsMc AB r2 r0, Y->M<>;
+	subs1 ZA r5, Y->M<>;			/*   x_pos_incr = -x_step - 1;*/
+	EG_X_NEG_INCR E->D, add DA 13, Y->ML;
+	subs ZA r5, Y->M<>, jmp l24;		/*   x_neg_incr = -x_step;    */
+						/* } else {		      */
+l23:	subr AB r11 r1 RAMF, Ic/->M;		/*   e = x_rem - dy + e_corr; */
+	subrMc AB r10 r0 RAMF;
+	add AB r3 r1, I->M, Y->M<>;
+	addMc AB r2 r0, Y->M<>;
+	add1 ZA r5, Y->M<>;			/*   x_pos_incr = x_step + 1; */
+	EG_X_NEG_INCR E->D, add DA 13, Y->ML;
+	r5 ->M<>;				/*   x_neg_incr = x_step;     */
+						/* }			      */
+l24:	r3 ->M<>;				/* e_neg_incr = x_rem;	      */
+	r2 ->M<>;
+	EG_E_POS_INCR E->D, add DA 13, Y->ML;	/* e_pos_incr = x_rem - dy;   */
+	subs AB r3 r11, Ic/->M, Y->M<>;
+	subsMc AB r2 r10, Y->M<>;
+
+	off_by_one E->L;
+	L<>->Y, cjp Iz l25;			/* Off-by-one filling? */
+
+	L<>-> r4;				/* Yes: fetch min-x */
+	L<>-> r5;
+
+	L<>-> r6;				/* Fetch max-x */
+	L<>-> r7;
+
+	r4 cmp r14, cjp Iult l27;		/* Min-x > x_int? */
+	r4 cmp r14, cjp Iugt l28;
+	r5 cmp r15, cjp Iule l27;
+
+l28:	r14 -> r4;				/* Yes: save new min-x */
+	r15 -> r5;
+
+l27:	r6 cmp r14, cjp Iugt l29;		/* Max-x < x_int? */
+	r6 cmp r14, cjp Iult l31;
+	r7 cmp r15, cjp Iuge l29;
+
+l31:	r14 -> r6;				/* Yes: save as max-x */
+	r15 -> r7;
+
+l29:	r4 -> r0;				/* Truncate min-x */
+	r5 -> r1, jsb fp_to_int;
+	r1 -> r3;
+
+	r6 -> r0;				/* Truncate max-x */
+	r7 -> r1, jsb fp_to_int;
+
+	r1 ->Q, jsb add_int_pair;		/* Add intercept pair */
+
+l25:	1 E-> r0;				/* Mark edge alive */
+	jmp restore_reg;
+
+eject;
+/*
+ *	READ_POINT
+ *
+ *	- Reads the next point from the edge coordinate list. This is
+ *	complicated by the fact that the coordinate list is stored in chained
+ *	data blocks.
+ *
+ *	in:
+ *		r12	data address (hi)
+ *
+ *	out:
+ *		r0	y (lo)
+ *		r1	y (hi)
+ *		r2	x (lo)
+ *		r3	x (hi)
+ *		r12	data address (hi)
+ *
+ *	in use:
+ *		r4 r5 r6 r7 r8 r9 r10 r11 r14 r15
+ *
+ *	changed:
+ *		r0 r1 r2 r3
+ */
+read_point:
+	M<>-> r0, cjs_Blkno chain_scan;		/* Read x hi */
+	r0 -> r3;
+	M<>-> r0, cjs_Blkno chain_scan;		/* Read x lo */
+	r0 -> r2;
+	M<>-> r0, cjs_Blkno chain_scan;		/* Read y hi */
+	r0 -> r1;
+	M<>-> r0, cjs_Blkno chain_scan;		/* Read y lo */
+	rtn;
+
+eject;
+/*
+ *	EMIT_OFF_BY_ONE_RUNS
+ *
+ *	- Calculate the black/white runs for off-by-one intercepts.
+ *
+ *	in:
+ *		r8	edge count
+ *		r11	param rec
+ *
+ *	in use:
+ *		r9 r10 r14 r15
+ *
+ *	usage:
+ *		r1	x
+ *		r2	black before
+ *		r3	black after
+ *		r4	path count
+ *		r5	previous x
+ *		r6	clip left
+ *		r7	clip right
+ *		r8	edge count
+ *		r9	fill rules (hi)
+ *		r10	fill rules (lo)
+ *		r11	param rec, path number
+ *		r12	current intercept
+ *		r14	edge parity
+ *		Q	clip
+ *
+ *	changed:
+ *		r1 Q
+ */
+emit_off_by_one_runs:
+	reg_save E->L;				/* Save registers */
+	r9 ->L<>;
+	r10 ->L<>;
+	r11 ->L<>;
+	r14 ->L<>;
+
+	0-> r2;					/* black_before = FALSE;      */
+	h'ffff' E->Q;				/* clip = BEFORE_CLIP;        */
+
+	SC_SENT_ADDR E->D, add DA r11, Y->L;
+	L<>-> r10;
+	L<>-> r9, Y->MH;
+	SE_PATH_CNT E->D, add DA r10, Y->ML;
+	M<>-> r4;
+	M<>-> r5;
+	M<>-> r6;
+	M<>-> r7;
+	SE_FILL_RULES E->D, add DA r10 r10 RAMF;
+
+	r4 -> r0;				/* Clear winding array */
+	0-> r1;
+	winding E->L;
+	L<>->L;
+
+	subr1 ZB r1 r0 RAMA, Y->L<>, cjp Iz/ '$';
+
+	0-> r14;
+	'intercepts + 2' E-> r12;
+
+obo_next_int:
+	next_int E->L;				/* End intercept list? */
+	L<>-> r0;
+	r12 cmp r0, cjp Iult l53;
+
+	reg_save E->L;				/* Yes: restore registers */
+	L<>-> r9;
+	L<>-> r10;
+	L<>-> r11;
+	L<>-> r14, jmp emit_runs_rtn;
+
+l53:	r12 ->L;				/* No: fetch x-intercept */
+	L<>-> r1, jsb test_clip;
+
+obo_wind_up:
+	next_int E->L;				/* End intercept list? */
+	L<>-> r0;
+	r12 cmp r0, cjp Iuge l56;
+
+	r12 ->L;				/* No: any more edges? */
+	L<>-> r0;
+	r0 cmp r1, cjp Ine l56;
+
+	L<>-> r0;				/* Yes: fetch type */	
+
+	RIGHT_EDGE E->D, and DA r0, I->M;
+	cjp Mz l57;				/* Left edge? */
+
+	inc r14;				/* Change edge parity */
+
+	PATH_MASK E->D, and DA r0 r11 RAMF;	/* Extract path number */
+
+	winding E->L;				/* Fetch winding number */
+	L<>->D, add DA r11, Y->L;
+	L<>-> r11, noinc;
+
+	test r0, cjp In/ l54;			/* and update it */
+	inc r11, Y->L<>, jmp l55;
+l54:	dec r11, Y->L<>, jmp l55;
+
+l57:	dec r14;				/* Change edge parity */
+
+l55:	2 E->D, add DA r12 r12 RAMF;		/* Advance intercept */
+	jmp obo_wind_up;
+
+l56:	test r14, cjp Iz l58;			/* Even edge? */
+	
+	1 E-> r3;				/* No: black_after = TRUE; */
+	jmp l46;
+
+l58:	0-> r3, jsb check_winding;		/* Yes: black_after = FALSE; */
+
+l46:	jsb out_run;
+	jmp obo_next_int;
+
+eject;
+/*
+ *	TEST_CLIP
+ *
+ *	- Tests the current x-value against the clipping path. If its found
+ *	to lie outside the clipping path it's adjusted accordingly. Clip
+ *	status as follow:
+ *
+ *		BEFORE	-ve
+ *		IN	0
+ *		AFTER	+ve
+ *
+ *	in:
+ *		r1	x
+ *		r6	clip left
+ *		r7	clip right
+ *		Q	clip
+ *
+ *	out:
+ *		r1	x
+ *		Q	clip
+ *
+ *	in use:
+ *		r2 r3 r4 r5 r8 r9 r10 r11 r12 r13 r14 r15
+ *
+ *	changed:
+ *		r1 Q
+ */
+test_clip:
+	testQ, cjp In/ l38;			/* if (clip == BEFORE_CLIP && */
+	r6 cmp r1, cjp Iugt l38;		/*   clip_left <= x) {        */
+
+	0->Q;					/*   clip = IN_CLIP;	      */
+	r6 -> r1;				/*   x = clip_left;	      */
+						/* }			      */
+l38:	testQ, crtn Iz/;			/* if (clip == IN_CLIP &&     */
+	r7 cmp r1, crtn Iugt;			/*   clip_right <= x) {       */
+
+	1 E->Q;					/*   clip = AFTER_CLIP;	      */
+	r7 -> r1, rtn;				/*   x = clip_right;	      */
+						/* }			      */
+
+eject;
+/*
+ *	CHECK_WINDING
+ *
+ *	- Checks the winding array to determine the current run colour.
+ *
+ *	in:
+ *		r3	black after
+ *		r4	path count
+ *		r9	fill rules (hi)
+ *		r10	fill rules (lo)
+ *
+ *	in use:
+ *		r6 r7 r8 r12 r14 r15 Q
+ *
+ *	usage:
+ *		r3	black after
+ *		r4	path count
+ *		r5	previous x
+ *		r11	current path number
+ *		r13	fill rules word
+ *
+ *	changed:
+ *		r0 r11 r13 L M
+ */
+check_winding:
+	r9 ->MH;				/* Initialise */
+	r10 ->ML;
+	winding E->L;
+	L<>->L;
+
+	0-> r11;				/* i = 0;		      */
+l42:	r11 cmp r4, crtn Iuge;			/* while (i < path_cnt) {     */
+
+	h'000f' E->D, and DA r11 r0 RAMF;
+	test r0, cjp Iz/ l43;
+
+	M<>-> r13, jmp l47;
+l43:	or ZA r13 r13 RAMU, shift <0;
+
+l47:	L<>-> r0;
+
+	test r13, cjp In/ l44;			/*   if (fill_rules[i] ==     */
+						/*     PATH_EOFILL) {	      */
+
+	h'0001' E->D, and DA r0 r0 RAMF;	/*     if (winding[i] & 01) { */
+	test r0, cjp Iz l45;
+
+	1 E-> r3, rtn;				/*       black_after = TRUE;  */
+						/*       break;		      */
+						/*     }		      */
+						/*   } else {		      */
+l44:	test r0, cjp Iz l45;			/*     if (winding[i] != 0) { */
+
+	1 E-> r3, rtn;				/*       black_after = TRUE;  */
+						/*       break;		      */
+						/*     }		      */
+						/*   }			      */
+l45:	inc r11, jmp l42;			/*   i++;		      */
+						/* }			      */
+eject;
+/*
+ *	OUT_RUN
+ *
+ *	- Outputs a run.
+ *
+ *	in:
+ *		r1	x
+ *		r2	black before
+ *		r3	black after
+ *		r5	previous x
+ *		Q	clip
+ *
+ *	in use:
+ *		r6 r4 r6 r7 r8 r12 r14 r15 Q
+ *
+ *	usage:
+ *		r1	x
+ *		r2	black before
+ *		r3	black after
+ *		r5	previous x
+ *		Q	clip
+ *
+ *	changed:
+ *		r0 r2 r3 r5
+ */
+out_run:
+	test r3, cjp Iz l37;			/* if (back_after == TRUE)    */
+	testQ, cjp Iz l37;			/*   black_after =	      */
+	0-> r3;					/*     clip == IN_CLIP;       */
+
+l37:	exor AB r2 r3, cjp Iz l50;		/* if (black_before !=        */
+						/*    black_after) {          */
+	h'c000' E-> r0;				/* Set run mask */
+	subs AB r1 r5 RAMF;
+	and AB r0 r5, Y->IO OBB_BIT_CON, ack;	/* Load high order run bits */
+	notrs AB r0 r5 RAMF;			/* Strip high order run bits */
+	test r2, cjp Iz/ l52;
+	h'8000' E-> r0;				/* Encode as white run */
+l52:	or AB r0 r5, Y->IO OBB_RUN_DATA, ack;	/* Load run data */
+
+	r1 -> r5;				/*   prev_x = x;	      */
+						/* }			      */
+l50:	r3 -> r2, rtn;				/* black_before = black_after;*/
+
+eject;
+/*
+ *	EMIT_PIXEL_CENTRE_RUNS
+ *
+ *	- Calculate the black/white runs for pixel centred intercepts.
+ *
+ *	in:
+ *		r8	edge count
+ *		r11	param rec
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *
+ *	in use:
+ *		r9 r10
+ *
+ *	usage:
+ *		r1	x
+ *		r2	black before
+ *		r3	black after
+ *		r4	path count
+ *		r5	previous x
+ *		r6	clip left
+ *		r7	clip right
+ *		r8	edge count
+ *		r9	fill rules (hi)
+ *		r10	fill rules (lo)
+ *		r11	param rec, path number
+ *		r12	edge index
+ *		r13	current edge (lo)
+ *		r14	active list (hi)
+ *		r15	active list (lo)
+ *		Q	clip
+ *
+ *	changed:
+ *		r1 Q
+ */
+emit_pixel_centre_runs:
+	reg_save E->L;				/* Save registers */
+	r9 ->L<>;
+	r10 ->L<>;
+	r11 ->L<>;
+
+	0-> r2;					/* black_before = FALSE;      */
+	h'ffff' E->Q;				/* clip = BEFORE_CLIP;        */
+
+	SC_SENT_ADDR E->D, add DA r11, Y->L;
+	L<>-> r10;
+	L<>-> r9, Y->MH;
+	SE_PATH_CNT E->D, add DA r10, Y->ML;
+	M<>-> r4;
+	M<>-> r5;
+	M<>-> r6;
+	M<>-> r7;
+	SE_FILL_RULES E->D, add DA r10 r10 RAMF;
+
+	r4 -> r0;				/* Clear winding array */
+	0-> r1;
+	winding E->L;
+	L<>->L;
+
+	subr1 ZB r1 r0 RAMA, Y->L<>, cjp Iz/ '$';
+
+	2 E-> r12;				/* Fetch edge address */
+
+pc_next_edge:
+	r12 cmp r8, cjp Iult l32;		/* End active list? */
+
+	reg_save E->L;				/* Yes: restore registers */
+	L<>-> r9;
+	L<>-> r10;
+	L<>-> r11, jmp emit_runs_rtn;
+
+l32:	r14 ->MH;				/* No: fetch edge address */
+	add AB r15 r12, Y->ML;
+	M<>-> r13;
+	M<>->MH;
+
+	EG_X E->D, add DA r13, Y->ML;		/* Fetch x */
+	M<>-> r1, jsb test_clip;
+
+pc_wind_up:
+	r12 cmp r8, cjp Iuge l39;		/* End active list? */
+
+	EG_X E->D, add DA r13, Y->ML;
+	M<>-> r0;
+	r0 cmp r1, cjp Ine l39;			/* More edges? */
+
+	EG_TYPE E->D, add DA r13, Y->ML;	/* Yes: fetch type */	
+	M<>-> r0;
+
+	PATH_MASK E->D, and DA r0 r11 RAMF;	/* Extract path number */
+
+	winding E->L;				/* Fetch winding number */
+	L<>->D, add DA r11, Y->L;
+	L<>-> r11, noinc;
+
+	test r0, cjp In/ l40;			/* and update it */
+	inc r11, Y->L<>, jmp l41;
+l40:	dec r11, Y->L<>;
+
+l41:	2 E->D, add DA r12 r12 RAMF;		/* Advance edge index */
+
+	r14 ->MH;				/* Fetch edge address */
+	add AB r15 r12, Y->ML;
+	M<>-> r13;
+	M<>->MH, jmp pc_wind_up;
+
+l39:	0-> r3, jsb check_winding;		/* black_after = FALSE; */
+	jsb out_run;
+
+	jmp pc_next_edge;
+
+	end;

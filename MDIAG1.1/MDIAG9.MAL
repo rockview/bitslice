@@ -1,0 +1,193 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 9 - Main ram arbitration.
+ *
+ *	PASS-	Repeat test. 
+ *	FAIL-	Attempt to write register values to the following locns
+ *		and interrupt:
+ *			0	Control word, value non-zero
+ *			1	Data written
+ *			2	Data read
+ *			3	Most significant address
+ *			4	Least significant address
+ *			5	Number of 64Kw pages of main memory
+ *
+ *	- Tests all main ram except the bottom 64Kw page with the
+ *	following patterns:
+ *		0000
+ *		FFFF
+ *		AAAA
+ *		5555
+ *		address for data
+ *
+ *	writing to every ODD location.  It is intended that the MC68000
+ *	is performing an identical test, albeit more slowly, on the other
+ *	memory port writing to every EVEN location thus testing the memory
+ *	arbitration logic.
+ *
+ *	- Main memory size is determined by reading bits 1 and 0 in
+ *	status register.  These are attached to jumpers LK7 and LK6 
+ *	on the board and should be set according to the size of installed
+ *	memory for this test to work properly.  Values as follows:
+ *	    bit-10
+ *		11	1Mw (2Mb)
+ *		10	2Mw (4Mb)
+ *		01	3Mw (6Mb)
+ *		00	4Mw (8Mb)
+ *	where:
+ *		1- jumper removed, 0- jumper installed.
+ *
+ *	This can be converted to the number of 64Kw pages as follows:
+ *		bit values-			11	10	01	00
+ *		invert, mask bits, shift up 1	00	02	04	06
+ *		shift up 2			00	08	16	24
+ *		add 8 and shift up 1		16	32	48	64
+ *
+ *	Author:	J A Hall
+ *	Date:	28 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 9, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	9;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	TEST_LED E-> r0;		/* Show test number */
+	r0 ->LED;
+
+	/* Compute memory size */
+	S_MS_MSK E-> r4;
+	STAT->D, notrs DA r4 r4 RAMU, shift <0;
+	add AB r4 r4 RAMU, shift <0;
+	h'8' E->D, add DA r4 r4 RAMU, shift <0;
+
+retest:	h'0000' E-> r0;
+	jsb pat_test;
+
+	h'FFFF' E-> r0;
+	jsb pat_test;
+
+	h'AAAA' E-> r0;
+	jsb pat_test;
+
+	h'5555' E-> r0;
+	jsb pat_test;
+
+	jsb afd_test;
+
+	jmp retest;			/* Go and retest */
+
+eject;
+/*
+ *	PAT_TEST
+ *
+ *	- Performs memory pattern test on every ODD location in main ram
+ *	except the bottom 64Kw page.
+ *
+ *	in:
+ *		r0	pattern value
+ *		r4	number of 64Kw pages to test
+ *
+ *	usage:
+ *		r0	data written
+ *		r1	data read
+ *		r2	page number
+ *		r3	page address
+ *		r5	2
+ */
+pat_test:
+	2 E-> r5;
+	1 E-> r2;			/* Load main address counter */
+	'M_BASE_PAGE + 1' E->MH;
+	1 E-> r3, Y->ML;
+
+l1:	r0 ->M<>, noinc;		/* Write data without auto increment */
+	M<>-> r1;			/* Read data */
+
+	r0 cmp r1, cjp Ine fail;	/* Any errors ? */
+
+	add AB r5 r3 RAMF, Y->ML, cjp Ic/ l1;	/* Finished page ? */
+
+	inc r2;				/* Bump page counter */
+	r2 cmp r4, cjp Ine l1;		/* Finished all pages ? */
+
+	rtn;
+	
+	/* Attempt to write register values to main memory */
+fail:	0->Y, Y->MCL;
+	1 E->M<>;			/* 0: Control word */
+	r0 ->M<>;			/* 1: Data written */
+	r1 ->M<>;			/* 2: Data read */
+	M_BASE_PAGE E->D, add DA r2, Y->M<>;	/* 3: Page number */
+	r3 ->M<>;			/* 4: Page address */
+	r4 ->M<>;			/* 5: Number of pages */
+
+	L_INTR E-> r15;			/* Generate interrupt */
+	r15 ->LED;
+	ERR_LED E-> r15;		/* Clear interrupt and show error */
+	r15 ->LED;
+
+	/* Loop passing register values to the Y bus so as to aid debugging */
+disp:	r0 ->Y;				/* Data written */
+	r1 ->Y;				/* Data read */
+	r2 ->Y;				/* Page number */
+	r3 ->Y;				/* Page address */
+	r4 ->Y, jmp disp;		/* Number of pages */
+
+eject;
+/*
+ *	AFD_TEST
+ *
+ *	- Performs memory address for data test on every location in main ram
+ *	except the bottom 64Kw page.  First write address for data to all of
+ *	memory and then read it back.  This ensures catching a non-incrementing
+ *	address counter.
+ *
+ *	in:
+ *		r4	number of 64Kw pages to test
+ *
+ *	usage:
+ *		r1	data read
+ *		r2	page number
+ *		r3	page address
+ *		r5	2
+ */
+afd_test:
+	2 E-> r5;
+	1 E-> r2;			/* Load main address counter */
+	'M_BASE_PAGE + 1' E->MH;
+	1 E-> r3, Y->ML;
+
+l2:	r3 ->M<>;			/* Write data */
+	add AB r5 r3 RAMF, Y->ML, cjp Ic/ l2;	/* Finished page ? */
+
+	inc r2;				/* Bump page counter */
+	r2 cmp r4, cjp Ine l2;		/* Finished all pages ? */
+
+	'M_BASE_PAGE + 1' E->MH;	/* Reload main address counter */
+	1 E-> r2, Y->ML;
+
+l3:	M<>-> r1;			/* Read data */
+	r3 cmp r1, cjp Ine afd_fail;	/* Any errors ? */
+
+	add AB r5 r3 RAMF, Y->ML, cjp Ic/ l3;	/* Finished page ? */
+
+	inc r2;				/* Bump page counter */
+	r2 cmp r4, cjp Ine l3;		/* Finished all pages ? */
+
+	rtn;
+	
+afd_fail:r3 -> r0, jmp fail;		/* Pattern test failed */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

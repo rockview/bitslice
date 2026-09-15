@@ -1,0 +1,195 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Job control.
+ *
+ *	Author:	J A Hall
+ *	Date:	20 May 87
+ */
+
+segment	job_rel;
+
+listing	!s;
+include	'death.h';			/* Image death handling */
+include	'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+include	'in_list.h';			/* Addition list */
+include 'obb.h';			/* OBB register definitions */
+include	'comms.h';			/* OBP/GPP communications */
+include	'misc.h';			/* Miscellaneous routines */
+include	'out_band.h';			/* Band output */
+listing	s;
+
+entry	wait_for_job;
+
+eject;
+/*
+ *	WAIT_FOR_JOB
+ *
+ *	- Waits for next job and typesets it.  Not a subroutine.
+ *
+ *	usage:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r4	next addition list request address (hi)
+ *		r5	next addition list request address (lo)
+ *
+ *	changed:
+ *		r2 r3 r4 r5 r13 L M
+ */
+wait_for_job:
+	jsb job_poll;				/* Wait for job */
+	jsb init_job;				/* Initialise job */
+
+	0-> r2;					/* Reset scan-line number */
+	0-> r3;
+
+read_list:
+	jsb in_list;				/* Input addition list */
+
+	request_no E->L;			/* Get next request line */
+	L<>-> r4;
+	L<>-> r5;
+
+	add1 ZA r4, cjp Iz/ next_band;		/* Last addition list? */
+	add1 ZA r5, cjp Iz last_list;
+
+next_band:
+	r2 cmp r4, cjp Ine l1;			/* No: read list yet? */
+	r3 cmp r5, cjp Ieq read_list;
+
+l1:	jsb out_band;				/* No: output a band of data */
+
+	request_no E->L;			/* Get next request line */
+	L<>-> r4;
+	L<>-> r5, jmp next_band;
+
+last_list:
+	pl_head E-> r0, Y->L;
+	L<>->D, subs DA r0, cjp Ieq end_of_job;	/* Priority list empty? */
+
+	jsb out_band;				/* No: output another band */
+	jmp last_list;
+
+end_of_job:
+	jsb send_death_list;			/* Send any pending deaths */
+
+	OBB_LOU_WAIT E-> r0;			/* Wait for LOU to empty buf */
+poll_lou:
+	OBB_STATUS IO->D, and DA r0 r1 RAMF;	/* Do it twice to `debounce' */
+	test r1, cjp Iz poll_lou;
+	OBB_STATUS IO->D, and DA r0 r1 RAMF;
+	test r1, cjp Iz poll_lou;
+
+	10 E-> r0;				/* Wait for last line */
+	jsb ms_wait;
+
+	depth_sema E->MCL;			/* Wait for depth semaphore */
+poll_depth:
+	M<>->Y, noinc, cjp Iz l4;
+	jsb poll_delay;
+	jmp poll_depth;
+
+l4:	jsb send_depth;				/* Send total job length */
+
+	poll_job E->MCL;			/* Yes: clear job poll */
+	0->M<>;
+
+	I_END_OF_JOB E-> r13;			/* Send end-of-job */
+	jsb send_cmd;
+
+	jmp wait_for_job;			/* Wait for another job */
+
+eject;
+/*
+ *	JOB_POLL
+ *
+ *	- Flashes the LEDs in the following sequence:
+ *		1 2 3 4 5 4 3 2 1 2 3 4 5 ...
+ *	Tests for job between LED changes.
+ *
+ *	usage:
+ *		r2	pattern direction: even = up, and odd = down.
+ *		r3	1, used for testing r2 odd/even
+ *		r5	led count
+ *		r6	current led pattern
+ *
+ *	changed:
+ *		r0 r2 r3 r4 r5 r6 L M
+ */
+job_poll:
+	b'00010' E-> r6;			/* Initialise */
+	4 E-> r5;
+	0-> r2;
+	1 E-> r3;
+
+led:	r6 ->LED;				/* Illuminate led */
+
+	50 E-> r0;				/* Wait 50 ms */
+	jsb ms_wait;
+
+	poll_job E->MCL;
+	M<>->Y, crtn Iz/;			/* Is job present? */
+
+	dec r5, cjp Iz/ l2;			/* No: finished direction? */
+
+	4 E-> r5;				/* Yes: reload led count */
+	inc r2;					/* Bump pattern direction */
+
+l2:	and AB r2 r3, cjp Iz/ l3;		/* Determine direction */
+
+	or ZA r6 r6 RAMU, shift <0, jmp led;	/* Shift led pattern up */
+l3:	or ZA r6 r6 RAMD, shift 0>, jmp led;	/* Shift led pattern down */
+
+eject;
+/*
+ *	INIT_JOB
+ *
+ *	- Does job initialisation.  Note that the 2-word value image_base is
+ *	stored low word low address so that the double precision calculation
+ *	in mk_addr is simpler and faster.
+ *
+ *	changed:
+ *		r0 r1 L M
+ */
+init_job:
+	M<>-> r0;				/* Load OBB mode register */
+	r0 ->IO OBB_OUT_MODE;
+
+	offset E->L;
+	M<>->L<>;				/* Copy reading offset */
+
+	M<>-> r0;				/* Fetch image memory base */
+	M<>->Q;
+	or ZA r0 r0 RAMQD, shift 0>>;		/* Make word address */
+	Q->L<>;					/* Save address (lo) */
+	r0 ->L<>;				/* Save address (hi) */
+
+	M<>->L<>;				/* Death buffer length */
+	M<>->D, or DZ rX r0 RAMD, shift 0>;	/* Death buffer 1 address */
+	r0 ->L<>;
+	M<>->D, or DZ rX r1 RAMD, shift 0>;	/* Death buffer 2 address */
+	r1 ->L<>;
+
+	0->L<>;					/* Clear death count */
+	add1 ZA r0, Y->L<>;			/* Death buffer next address */
+	r0 ->L<>;				/* Load current death buffer */
+
+	0->L<>;					/* Clear free record list */
+	M<>->D, or DZ rX r1 RAMD, shift 0>;	/* Fetch intercept buf length */
+	M<>->D, or DZ rX r0 RAMD, shift 0>;	/* Fetch winding array length */
+	add AB r1 r0 RAMF;			/* Compute/load heap pointer */
+	intercepts E->D, add DA r0, Y->L<>;
+
+	pl_head E-> r0;				/* Set up priority list head */
+	r0 ->L<>;				/* Next */
+	r0 ->L<>;				/* Last */
+	h'ffff' E->L<>;				/* Impossibly large priority */
+
+	pl_curr E->L;				/* Set current priority */
+	r0 ->L<>;
+
+	winding E->L;				/* Set winding array pointer */
+	intercepts E->D, add DA r1, Y->L<>, rtn;
+
+	end;

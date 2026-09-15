@@ -1,0 +1,111 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Boot/TF handling.
+ *
+ *	Author:	J A Hall
+ *	Date:	14 Apr 87
+ */
+
+segment	boot_rel;
+
+listing	!s;
+include	'comms.h';			/* OBP/GPP communications */
+include	'loc.h';			/* Local memory variables */
+include	'job.h';			/* Job control */
+include	'main.h';			/* Main memory variables */
+include	'misc.h';			/* Miscellaneous routines */
+include 'obb.h';			/* OBB register definitions */
+listing	s;
+
+org	h'0';
+
+eject;
+/*
+ *	BOOT
+ *
+ *	- Boot/TF interrupt handling code. All the output buffer lines are
+ *	cleared and the OBP positioned in the band following the LOU on the
+ *	boot condition. Sixteen, rather than fourteen, bands are cleared. This
+ *	handles the case where the OBB powers up in one of the temporary 
+ *	buffers. Not a subroutine.
+ *
+ *	usage:
+ *		r2	band down count
+ *		r3	maximium black run
+ *		r4	line down count
+ *		r5	band increment bit
+ *		r6	line increment bit
+ *
+ *	changed:
+ *		r0 r1 r2 r3 r4 r5 r6 r13 L
+ */
+boot:	S_BOOT/TF E-> r1;			/* Read/test status register */
+	STAT-> r0;
+	and AB r0 r1, cjp Iz/ booted;		/* Just booted? */
+
+	L_RESET E-> r0;				/* No: clear TF interrupt */
+	r0 ->LED;
+	0->LED;					/* Clear LEDs */
+
+booted:	OBB_RESET E-> r0;			/* Reset band address */
+	r0 ->IO OBB_OUT_MODE;
+	0->IO OBB_LINE_ADDR;			/* Action reset */
+	0->IO OBB_OUT_MODE;			/* Clear reset */
+
+	OBB_CLEAR_MODE E-> r0;			/* Set up clear buffer mode */
+	r0 ->IO OBB_RUN_MODE;
+
+	h'c000' E-> r0;				/* Load high order run bits */
+	r0 ->IO OBB_BIT_CON;
+
+	OBB_BAND E-> r5;			/* Band increment bit */
+	OBB_LINE E-> r6;			/* Line increment bit */
+
+	0->IO OBB_LINE_ADDR;			/* Clear line address */
+	h'ffff' E-> r3;				/* Maximum black run */
+
+	'OBB_BAND_CNT + 2' E-> r2;
+
+next_band:
+	OBB_LINE_CNT E-> r4;
+
+next_line:
+	0->IO OBB_RUN_ADDR;			/* Clear run start address */
+	r3 ->IO OBB_RUN_DATA;			/* Output run */
+
+	5 E-> r0;				/* Wait 5 ms */
+	jsb ms_wait;
+
+	r6 ->IO OBB_LINE_ADDR;			/* Increment line */
+	dec r4, cjp Iz/ next_line;		/* Finished all lines? */
+
+	r5 ->IO OBB_LINE_ADDR;			/* Yes: increment band */
+
+	dec r2, cjp Iz/ next_band;		/* Finished all bands? */
+
+	OBB_BAND_BSY E-> r1;			/* Yes: load constants */
+	OBB_BAND_CNT E-> r3;
+
+test_band:
+	OBB_STATUS IO->D, and DA r1 r2 RAMF;	/* Band busy? */
+	test r2, cjp Iz/ band_busy;
+
+	r5 ->IO OBB_LINE_ADDR;			/* No: increment band */
+	dec r3, cjp Iz/ test_band;		/* and retry */
+
+	F_LOU_INIT E-> r14;			/* Can't find busy band */
+	jmp send_fatal;				/* Send fatal error */
+
+band_busy:
+	r5 ->IO OBB_LINE_ADDR;			/* Jump 2 bands */
+	r5 ->IO OBB_LINE_ADDR;
+	jmp wait_for_job;
+
+segment	boot_abs, abs(0);
+
+org	h'fff';
+
+	jz;					/* Boot/TF int via here */
+
+	end;

@@ -1,0 +1,176 @@
+#
+#	Makefile for diagnostic microprograms.  Use Zortec make.  Version %I%.
+#	
+#	Author:	J A Hall
+#	Date:	5 Dec 86
+#
+#	Macros
+#	------
+DEF_MAC =	..\def\obp		# Definition and macro files
+DEF_DEP =	..\def\obp.def		# Definition dependancy file
+BACKUP =	a:mdiag1.1
+PRINTER =	lpt3:
+SUN =		marvin
+S3 =		vulcan
+
+OBS =		mdiag3.ob mdiag4.ob mdiag5.ob mdiag6.ob mdiag7.ob!
+		mdiag8.ob mdiag9.ob mdiag10.ob mdiag11.ob mdiag12.ob!
+		mdiag13.ob mdiag14.ob mdiag15.ob obb.ob
+ABSS =		mdiag3.abs mdiag4.abs mdiag5.abs mdiag6.abs mdiag7.abs!
+		mdiag8.abs mdiag9.abs mdiag10.abs mdiag11.abs mdiag12.abs!
+		mdiag13.abs mdiag14.abs mdiag15.abs obb.abs
+OBJS =		mdiag3.obj mdiag4.obj mdiag5.obj mdiag6.obj mdiag7.obj!
+		mdiag8.obj mdiag9.obj mdiag10.obj mdiag11.obj mdiag12.obj!
+		mdiag13.obj mdiag14.obj mdiag15.obj obb.obj
+LENS =		mdiag3.len mdiag4.len mdiag5.len mdiag6.len mdiag7.len!
+		mdiag8.len mdiag9.len mdiag10.len mdiag11.len mdiag12.len!
+		mdiag13.len mdiag14.len mdiag15.len obb.len
+LISS =		mdiag3.lis mdiag4.lis mdiag5.lis mdiag6.lis mdiag7.lis!
+		mdiag8.lis mdiag9.lis mdiag10.lis mdiag11.lis mdiag12.lis!
+		mdiag13.lis mdiag14.lis mdiag15.lis obb.lis
+
+#
+#	Inference rules
+#	---------------
+.mal.ob :
+	ma -d $(DEF_MAC) $* -le
+
+.ob.abs :
+	ml -d $(DEF_MAC) $* -l^s
+
+.abs.obj :
+	mf -d $(DEF_MAC) -ho $* -l^s
+
+#
+#	Make programs
+#	-------------
+$(OBS) $(ABSS) $(OBJS) :	$(DEF_DEP)
+
+#
+#	Install variable length on series 3
+#	-----------------------------------
+instxx :
+	len mdiag3
+	len mdiag4
+	len mdiag5
+	len mdiag6
+	len mdiag7
+	len mdiag8
+	len mdiag9
+	len mdiag10
+	len mdiag11
+	len mdiag12
+	len mdiag13
+	len mdiag14
+	len mdiag15
+	rcp mdiag3.xxb $(SUN):/tmp/mdiag3
+	rcp mdiag4.xxb $(SUN):/tmp/mdiag4
+	rcp mdiag5.xxb $(SUN):/tmp/mdiag5
+	rcp mdiag6.xxb $(SUN):/tmp/mdiag6
+	rcp mdiag7.xxb $(SUN):/tmp/mdiag7
+	rcp mdiag8.xxb $(SUN):/tmp/mdiag8
+	rcp mdiag9.xxb $(SUN):/tmp/mdiag9
+	rcp mdiag10.xxb $(SUN):/tmp/mdiag10
+	rcp mdiag11.xxb $(SUN):/tmp/mdiag11
+	rcp mdiag12.xxb $(SUN):/tmp/mdiag12
+	rcp mdiag13.xxb $(SUN):/tmp/mdiag13
+	rcp mdiag14.xxb $(SUN):/tmp/mdiag14
+	rcp mdiag15.xxb $(SUN):/tmp/mdiag15
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag3
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag4
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag5
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag6
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag7
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag8
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag9
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag10
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag11
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag12
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag13
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag14
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag15
+	rm /tmp/mdiag*
+
+#
+#	Make and install fixed length on series3
+#	----------------------------------------
+inst10 :
+	len -f mdiag3
+	len -f mdiag4
+	len -f mdiag5
+	len -f mdiag6
+	len -f mdiag7
+	len -f mdiag8
+	len -f mdiag9
+	len -f mdiag10
+	len -f mdiag11
+	len -f mdiag12
+	len -f mdiag13
+	len -f mdiag14
+	len -f mdiag15
+	rcp mdiag3.10b $(SUN):/tmp/mdiag3
+	rcp mdiag4.10b $(SUN):/tmp/mdiag4
+	rcp mdiag5.10b $(SUN):/tmp/mdiag5
+	rcp mdiag6.10b $(SUN):/tmp/mdiag6
+	rcp mdiag7.10b $(SUN):/tmp/mdiag7
+	rcp mdiag8.10b $(SUN):/tmp/mdiag8
+	rcp mdiag9.10b $(SUN):/tmp/mdiag9
+	rcp mdiag10.10b $(SUN):/tmp/mdiag10
+	rcp mdiag11.10b $(SUN):/tmp/mdiag11
+	rcp mdiag12.10b $(SUN):/tmp/mdiag12
+	rcp mdiag13.10b $(SUN):/tmp/mdiag13
+	rcp mdiag14.10b $(SUN):/tmp/mdiag14
+	rcp mdiag15.10b $(SUN):/tmp/mdiag15
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag3
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag4
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag5
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag6
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag7
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag8
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag9
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag10
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag11
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag12
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag13
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag14
+	rsh $(SUN) /usr/local/bin/mmput -vD 3.1/mcode $(S3) /tmp/mdiag15
+	rm /tmp/mdiag*
+
+#
+#	Make disk backup
+#	----------------
+backup :
+		copy *.mal $(BACKUP)
+		copy *.ml $(BACKUP)
+		copy makefile $(BACKUP)
+
+#
+#	Restore from disk
+#	-----------------
+restore :
+		copy $(BACKUP)\*.mal
+		copy $(BACKUP)\*.ml
+		copy $(BACKUP)\makefile
+
+#
+#	Tidy up directory
+#	-----------------
+tidy :
+		del *.mal
+		del *.ml
+		del *.lis
+		del *.ob
+		del *.obj
+		del *.abs
+
+#
+#	Error check
+#	-----------
+check :
+		grep warnings *.lis
+
+#
+#	Print listing
+#	-------------
+print :
+		net print $(LISS) $(PRINTER)

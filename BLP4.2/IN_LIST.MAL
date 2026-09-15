@@ -1,0 +1,335 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Inputs addition list and constructs priority/image list.
+ *
+ *	Addition list record:
+ *
+ *         0      1      2      3      4      5
+ *	+-----------------------------------------+
+ *	|  0   | pri  | mode | pat  | pat  | pat  |
+ *	|      |      |      | type |data1 |data2 |
+ *	+-----------------------------------------+
+ *
+ *		Pattern data:	    --------------+
+ *				    |packed|      |
+ *				    | a b  |      |
+ *				    --------------+
+ *
+ *		Tint data:	    --------------+
+ *				    | cell | tint |
+ *				    | size |value |
+ *				    --------------+
+ *	Image list record:
+ *
+ *	   0      1      2      3      4      5      6      7      8      9
+ *	+---------------------------------------------------------------------+
+ *	| next | last | pri  | mode | pat  | data | data | data | data |image |
+ *	|      |      |      |      | type |  1   |  2   |  3   |  4   | list |
+ *	+---------------------------------------------------------------------+
+ *
+ *		Pattern data:              -----------------------------
+ *					   |  a   |  b   |a + b |packed|
+ *					   |      |      |      | a b  |
+ *					   -----------------------------
+ *
+ *		Tint data:                 -----------------------------
+ *					   | cell | tint |      |      |
+ *					   | size | word |      |      |
+ *					   -----------------------------
+ *
+ *	Author:	J A Hall
+ *	Date:	17 Mar 87
+ */
+
+segment	in_list_rel;
+
+listing	!s;
+include	'char.h';			/* Character support */
+include	'comms.h';			/* OBP/GPP communications */
+include	'death.h';			/* Image death handling */
+include	'graduate.h';			/* Graduated tint support */
+include	'line_art.h';			/* Line art support */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+include	'misc.h';			/* Miscellaneous routines */
+include	'picture.h';			/* Picture support */
+include	'rule.h';			/* Rule support */
+include	'shape.h';			/* Shape support */
+include	'scan.h';			/* Scan converted image support */
+include	'tile.h';			/* Tiled rectangle support */
+listing	s;
+
+entry	in_list, next_rec, rec_error, fix_addr;
+
+eject;
+/*
+ *	IN_LIST
+ *
+ *	- Reads new addition list.  This routine will only work correctly if
+ *	each addition list starts with a priority record and that 2 or
+ *	more priority records don't occur consecutively.  A list with no record
+ *	entries simply updates the next request scan-line number.  This is
+ *	useful if it is required to output some white space at the start of
+ *	a job.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *
+ *	usage:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *		r4	addition record count
+ *		r5	current image list record
+ *		r6	image list head
+ *		r7	current priority record
+ *		r8	current priority
+ *		r9	priority list head
+ *		r10	image skip count
+ *		r11	record type
+ *		r15	forward/reverse reading offset
+ *
+ *	changed:
+ *		r0 r1 r4 r5 r6 r7 r8 r9 r10 r11 r15 Q L M
+ *		
+ */
+in_list:
+	poll_list E->MCL;			/* Poll for addition list */
+	M<>->Y, cjp Iz/ l5;			/* List available? */
+
+	LIST_WAIT E-> r0;			/* No: set list wait LED */
+	r0 ->LED;
+
+	poll_death E->MCL;			/* Poll for death list */
+	M<>->Y, cjs Iz/ send_death_list;	/* GPP wants death list? */
+	jsb poll_delay;
+	jmp in_list;
+
+l5:	0->LED;					/* Clear LEDs */
+
+	M<>-> r0;				/* Fetch addition list addr */
+	M<>->Q;
+	or ZA r0 r0 RAMQD, shift 0>>;		/* Make word address */
+
+	list_addr E->L;				/* Load/save address */
+	r0 ->MH, Y->L<>;
+	Q->Y, Y->ML, Y->L<>;
+
+	M<>-> r4;				/* Fetch addition rec. count */
+	M<>->L<>;				/* Copy request number */
+	M<>->L<>;
+
+	offset E->L;
+	L<>-> r15;				/* Get forward/reverse offset */
+	pl_curr E->L;				/* Get current priority rec. */
+	L<>-> r7;
+	PR_PRIORITY E->D, add DA r7, Y->L;	/* Get current priority */
+	L<>-> r8;
+	PR_IMAGE E->D, add DA r7, Y->L;		/* Get image list head */
+	L<>-> r6;
+	pl_head E-> r9;				/* Get priority list head */
+
+next_rec:
+	dec r4, cjp In end_list;		/* Read all records yet? */
+
+	M<>-> r11, cjp Iz in_priority;		/* No: get type, priority? */
+
+	jsb get_rec;				/* No: get new image record */
+	r0 -> r5, Y->L;				/* Add to head of image list */
+	r6 ->L<>;
+	r5 -> r6;
+	
+	r11 ->L<>;				/* Save type */
+	M<>->L<>, D-> r10;			/* Save skip */
+
+	dec r11, cjp Iz in_char;		/* Character? */
+	dec r11, cjp Iz in_rule;		/* Rule? */
+	dec r11, cjp Iz in_shape;		/* Shape? */
+	dec r11, cjp Iz in_scan;		/* Scan conversion image? */
+	dec r11, cjp Iz in_line_art;		/* Line art? */
+	dec r11, cjp Iz in_picture;		/* Bitmap? */
+	dec r11, cjp Iz in_picture;		/* Halftone? */
+	dec r11, cjp Iz in_grad_tint;		/* Graduated tint? */
+	dec r11, cjp Iz in_tile;		/* Tiled rectangle? */
+
+	W_BAD_ADDN_TYPE E-> r14;		/* Bad addition record type */
+	jsb send_warning;
+
+rec_error:
+	r6 ->L;					/* Put back record */
+	L<>-> r6;
+	r5 -> r0, jsb put_rec;
+
+end_list:
+	PR_IMAGE E->D, add DA r7, Y->L;		/* Save last image list */
+	r6 ->L<>;
+
+	poll_list E->MCL;			/* Clear list poll location */
+	0->M<>;
+
+	I_NEW_LIST E-> r13;			/* Send new list interrupt */
+	jsb send_cmd;
+	rtn;
+
+eject;
+/*
+ *	IN_PRIORITY
+ *
+ *	- Reads a new priority record from the addition list.  Not a subroutine.
+ *
+ *	in:
+ *		r5	current image list record
+ *		r6	image list head
+ *		r7	current priority record
+ *		r8	current priority
+ *		r9	priority list head
+ *
+ *	in use:
+ *		r2 r3 r4 r15
+ *
+ *	usage:
+ *		r0	current priority
+ *		r5	current image list record
+ *		r6	image list head
+ *		r7	current priority record
+ *		r8	current priority
+ *		r9	priority list head
+ *		r10	next priority record
+ *		r11	pattern type
+ *		r12	new priority
+ *		
+ *	changed:
+ *		r0 r1 r6 r7 r8 r10 r11 r12 L M
+ */
+in_priority:
+	M<>-> r12;				/* Get new priority */
+	r12 cmp r8, cjp Ine l1;			/* Same as current priority? */
+
+discard_rec:
+	phlc 3;					/* Yes: discard record */
+	M<>->Y, rfct;
+	jmp next_rec;
+
+l1:	PR_IMAGE E->D, add DA r7, Y->L;		/* No: save last image list */
+	r6 ->L<>;
+
+	r12 cmp r8, cjp Iuge l2;		/* New pri < current pri? */
+	r9 ->L, jmp l3;				/* Yes: search from head */
+l2:	r7 ->L;					/* No: search from next rec. */
+l3:	L<>-> r7;
+
+cmp_pri:
+	r7 cmp r9, cjp Ieq add_rec;		/* Finished searching list? */
+	
+	PR_PRIORITY E->D, add DA r7, Y->L;	/* No: get current priority */
+	L<>-> r0;
+
+	r12 cmp r0, cjp Ine l4;			/* New pri == current pri? */
+	PR_IMAGE E->D, add DA r7, Y->L;		/* Yes: get image list head */
+	L<>-> r6;
+	pl_curr E->L;				/* Save current priority rec */
+	r7 ->L<>;
+	r0 -> r8, jmp discard_rec;		/* Update current priority */
+l4:	r12 cmp r0, cjp Iult add_rec;		/* New pri > current pri? */
+
+	r7 ->L;					/* Yes: get next record */
+	L<>-> r7, jmp cmp_pri;
+
+add_rec:
+	r7 -> r10, jsb get_rec;			/* Get new record */
+	r0 -> r7, Y->L;
+	r10 ->L<>;				/* Next record */
+	0->L<>;					/* Last record */
+	r12 ->L<>;				/* Priority */
+	M<>->L<>;				/* Mode */
+	M<>->L<>, D-> r11;			/* Pattern type */
+	M<>->L<>;				/* Data 1 */
+	M<>->L<>;				/* Data 2 */
+	0->L<>;					/* Data 3 */
+	0->L<>;					/* Data 4 */
+	0->L<>;					/* Image list */
+
+	PR_LAST E->D, add DA r10, Y->L;		/* Update next record last */
+	L<>-> r1, noinc;
+	r7 ->L<>;
+
+	PR_LAST E->D, add DA r7, Y->L;		/* Load new record last */
+	r1 ->L<>, Y->L;
+
+	r7 ->L<>;				/* Update last record next */
+
+	pl_curr E->L;				/* Save current priority rec */
+	r7 ->L<>;
+	
+	0-> r6; 				/* Set image head to NULL */
+	r12 -> r8;				/* Update priority */
+
+	test r11, cjp Iz next_rec;		/* Pattern present? */
+
+	6 E-> r0;
+	r11 cmp r0, cjp Iugt tint;		/* Yes: normal a b pattern? */
+
+	PR_DATA1 E->D, add DA r7, Y->L;		/* Yes: fetch packed a b */
+	L<>-> r0, noinc;
+
+	h'00ff' E->D, and DA r0 r1 RAMF;	/* Extract b */
+
+	r0 -> r11, phlc 3;			/* Extract a */
+	addIc AB r11 r11 RAMU, shift rot<, rfct;
+	h'00ff' E->D, and DA r11 r11 RAMF; 
+
+	r11 ->L<>;				/* Save a */
+	r1 ->L<>;				/* Save b */
+	add AB r1 r11, Y->L<>;			/* Save a + b */
+	r0 ->L<>, jmp next_rec;			/* Save packed a b */
+
+tint:	7 E-> r0;				/* Tint? */
+	r11 cmp r0, cjp Iugt not_impl;		
+
+	PR_DATA2 E->D, add DA r7, Y->L;		/* Yes: make tint load word */
+	L<>-> r0, noinc;
+	r0 -> r1, phlc 3;
+	add AB r1 r1 RAMU, shift <0, rfct;
+	or AB r0 r1, Y->L<>, jmp next_rec;
+
+eject;
+/*
+ *	FIX_ADDR
+ *
+ *	- Unfortunately the some input routines have to modify the main memory
+ *	address latch in order to fetch some parameters.  Upon exit from
+ *	these the latch must be reloaded so that it points to the correct
+ *	postion in the addition list.  The low latch is simply saved in local
+ *	ram but the high latch presents more of a problem because the addition
+ *	list may have crossed a 64kw boundary.  This is solved in the following
+ *	way:
+ *
+ *	1. The initial addition list address is saved local ram.
+ *	2. After the addition list record words have been read this routine
+ *	   is called.
+ *	3. The current value of the main low address latch is compared with the
+ *	   saved copy.
+ *	4. If it has a smaller value then a boundary has been crossed and the
+ *	   saved high address is incremented.
+ *	5. The saved low address is overwritten with the current value.
+ *	6. At the end of the input routine the main memory address latch is
+ *	   loaded from the saved copy.
+ *
+ *	changed:
+ *		r0 r1 r11 L
+ */
+fix_addr:
+	list_addr E->L;				/* Fetch initial address */
+	L<>-> r0;
+	L<>-> r1, noinc;
+
+	ML-> r11, Y->L<>;			/* Read/save current lo addr */
+
+	r11 cmp r1, crtn Iuge;			/* Current lo < initial lo? */
+
+	list_addr E->L;				/* Yes: increment hi address */
+	add1 ZA r0, Y->L<>, rtn;
+
+	end;

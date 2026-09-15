@@ -1,0 +1,214 @@
+/*
+ *	%W%	Series3 BLP
+ *
+ *	- Band construction.
+ *
+ *	Author:	J A Hall
+ *	Date:	15 Feb 87
+ */
+
+segment	out_band_rel;
+
+listing	!s;
+include	'char.h';			/* Character support */
+include	'comms.h';			/* OBP/GPP communications */
+include	'death.h';			/* Image death handling */
+include	'graduate.h';			/* Graduated tint support */
+include	'line_art.h';			/* Line art support */
+include	'list.h';			/* Priority/image list */
+include	'loc.h';			/* Local memory variables */
+include	'main.h';			/* Main memory variables */
+include	'misc.h';			/* Miscellaneous routines */
+include 'obb.h';			/* OBB register definitions */
+include	'picture.h';			/* Picture support */
+include	'rule.h';			/* Rule support */
+include	'shape.h';			/* Shape support */
+include	'scan.h';			/* Scan converted image support */
+include	'tile.h';			/* Tiled rectangle support */
+listing	s;
+
+entry	out_band, next_pri, next_image, image_alive;
+
+eject;
+/*
+ *	OUT_BAND
+ *
+ *	- Outputs a band of scan lines for all images.
+ *
+ *	in:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *
+ *	out:
+ *		r2	current scan line address (hi)
+ *		r3	current scan line address (lo)
+ *
+ *	usage:
+ *		r3	current priority pointer
+ *		r4	last image pointer
+ *		r5	current image pointer
+ *
+ *	changed:
+ *		r0 r1 r2 r3 r4 r5 L
+ */
+out_band:
+	line_no E->L;				/* Save scan-line number */
+	r2 ->L<>;
+	r3 ->L<>;
+
+	pl_head E->L;				/* Get priority list pointer */
+	L<>-> r3;
+
+next_pri:
+	pl_head E-> r0;
+	r0 cmp r3, cjp Ieq end_pri;		/* End of priority list? */
+
+	PR_MODE E->D, add DA r3, Y->L;		/* No: load run mode register */
+	L<>-> r0;
+	r0 ->IO OBB_RUN_MODE, ack;
+
+	PR_IMAGE E->D, add DA r3, Y->L;		/* Get image list */
+	L<>-> r5;
+	0-> r4;					/* No last image */
+
+	PR_PAT_TYPE E->D, add DA r3, Y->L;	/* Fetch pattern type */
+	L<>-> r0;
+
+	0-> r6;
+	test r0, cjp Iz save_type;		/* Is image pat/tint/jumbled? */
+
+	inc r6;
+	6 E-> r1;
+	r0 cmp r1, cjp Iule save_type;		/* Yes: normal a b pattern? */
+
+	5 E->D, subr DA r0 r6 RAMF;		/* No: compute type 2 or 3 */
+
+save_type:
+	pat_type E->L;				/* Save easy test type */
+	r6 ->L<>;
+
+next_image:
+	test r5, cjp Iz end_image;		/* End of image list? */
+
+	jmp out_image;				/* No: process image */
+
+image_alive:
+	r5 -> r4, Y->L;				/* Yes: traverse image list */
+	L<>-> r5, jmp next_image;
+
+end_image:
+	r3 ->L;					/* Traverse priority list */
+	L<>-> r3, jmp next_pri;
+
+end_pri:
+	BAND_WAIT E-> r0;			/* Set band wait LED */
+	r0 ->LED;
+
+	OBB_BAND E-> r0;			/* Move into next band */
+	r0 ->IO OBB_LINE_ADDR, ack;
+
+	0->LED;					/* Clear LEDs */
+
+	poll_death E->MCL;
+	M<>->Y, cjs Iz/ send_death_list;	/* GPP wants death list? */
+
+	line_no E->L;				/* Increment scan line number */
+	L<>-> r2;
+	L<>-> r3;
+	OBB_LINE_CNT E->D, add DA r3 r3 RAMF, I->M;
+	addMc ZA r2 r2 RAMF;
+
+	jsb send_depth;				/* Inform GPP of progress */
+
+	rtn;
+
+eject;
+/*
+ *	OUT_IMAGE
+ *
+ *	- Constructs a band of scan-lines for the current image.  Not a
+ *	subroutine.
+ *
+ *	in:
+ *		r5	current image pointer
+ *
+ *	in use:
+ *		r3 r4 
+ *		
+ *	usage:
+ *		r0	skip count
+ *		r1	image type
+ *		r2	pattern type
+ *		r5	current image pointer
+ *		r6	line address
+ *		r7	band size
+ *
+ *	changed:
+ *		r0 r1 r2 r6 r7 r14 L
+ */
+out_image:
+	0-> r6;					/* Clear line count */
+	OBB_LINE_CNT E-> r7;			/* Set band size */
+	pat_type E->L;				/* Get pattern type */
+	L<>-> r2;
+	GR_TYPE E->D, add DA r5, Y->L;		/* Fetch image type */
+	L<>-> r1;
+
+	L<>-> r0, cjp Iz no_skip;		/* Fetch skip, skip lines? */
+
+	GR_SKIP E->D, add DA r5, Y->L;		/* Yes: reload address */
+	r0 cmp r7, cjp Iult skip_end;		/* End of skip in this band? */
+	subs AB r0 r7, Y->L<>, jmp image_alive;	/* No: write new skip count */
+
+skip_end:
+	0->L<>;					/* Yes: clear skip */
+	r0 -> r6;				/* Set line address */
+
+no_skip:
+	test r2, cjp Iz/ pat;			/* Image patterned? */
+
+	dec r1, cjp Iz out_char;		/* No: character? */
+	dec r1, cjp Iz out_rule;		/* Rule? */
+	dec r1, cjp Iz out_shape;		/* Shape? */
+	dec r1, cjp Iz out_scan;		/* Image scan conversion? */
+	dec r1, cjp Iz out_line_art;		/* Line graphic? */
+	dec r1, cjp Iz out_bitmap;		/* Bitmap? */
+	dec r1, cjp Iz out_halftone;		/* Halftone? */
+	dec r1, cjp Iz out_grad_tint;		/* Graduated tint? */
+	jmp out_tile;				/* Tiled rectangle */
+
+pat:	dec r2, cjp Iz/ flat_tint;		/* Normal a b pattern? */
+
+	dec r1, cjp Iz pat_char;		/* Yes: character? */
+	dec r1, cjp Iz pat_rule;		/* Rule? */
+	dec r1, cjp Iz pat_shape;		/* Shape? */
+	dec r1, cjp Iz pat_scan;		/* Image scan conversion? */
+	dec r1, cjp Iz pat_line_art;		/* Line graphic? */
+
+	W_CANT_PAT E-> r14;			/* Can't pattern image */
+	jsb send_warning;			/* so send warning */
+
+	jmp l3;					/* Remove the image record */
+
+flat_tint:
+	dec r2, cjp Iz/ not_impl;		/* Flat tint? */
+
+	W_CANT_TINT E-> r14;
+	dec r1, cjp Iz/ l4;			/* Yes: character? */
+
+	jsb send_warning;			/* Yes: report it */
+	jmp remove_char;			/* and remove image record */
+
+l4:	dec r1, cjp Iz tint_rule;		/* Rule? */
+	dec r1, cjp Iz tint_shape;		/* Shape? */
+
+	jsb send_warning;			/* No: so send warning */
+
+	dec r1, cjp Iz remove_scan;		/* and remove image record */
+	dec r1, cjp Iz remove_picture;
+l3:	dec r1, cjp Iz remove_picture;
+	dec r1, cjp Iz remove_picture;
+	dec r1, cjp Iz remove_grad_tint;
+	jmp remove_tile;
+
+	end;

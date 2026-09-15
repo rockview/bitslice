@@ -1,0 +1,180 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 6 - ALU (AM29101) and status and shift control (AM2904).
+ *
+ *	PASS-	Interrupt.
+ *	FAIL-	Loop.
+ *
+ *	- Tests AM29101 I8-0, A3-0, B3-0, mult_en with bit patterns:
+ *		0000
+ *		FFFF
+ *		AAAA
+ *		5555
+ *
+ *	This yields the following assignments:
+ *		I8-6	I5-3	I2-0	A3-0	B3-0	emit
+ *
+ *		QREG	ADD	AQ	r0	r0	0000
+ *		RAMU	EXNOR	DZ	r15	r15	FFFF
+ *		RAMD	NOTRS	DA	r10	r10	AAAA
+ *		RAMA	SUBS	ZQ	r5	r5	5555
+ *
+ *	Tests AM2904 I12-0, msr_en with same patterns yielding:
+ *		I12-10	I9-6	I5-0	I5-0
+ *
+ *		0->C	0>	Msle	LOAD
+ *		Mc->C	rot<<	In/	LWCI
+ *		Cx->C	Mc<<1	Iz/	-
+ *		1->C	rot>	Mc	-
+ *
+ *	also tests the shift links: SIOo SIOn QIOo QIOn and In Ic Iovr Iz Cx Co
+ *
+ *	Author:	J A Hall
+ *	Date:	26 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 6, version %I%';
+
+/* Led indicators */
+TEST_LED	equ	6;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	TEST_LED E-> r0;		/* Show test number */
+	r0 ->LED;
+
+	/* AM29101:	I2-0=	DZ
+	 *		A3-0=	r0
+	 *		B3-0=	r0 r15 r10 r5
+	 *		emit=	0000 FFFF AAAA 5555
+	 * AM2904:	Iz/
+	 *		link=	Iz
+	 */	
+	h'0000' E->D, or DZ rX r0 RAMF;		/* Y= 0000 */
+	h'FFFF' E->D, or DZ rX r15 RAMF;	/* Y= FFFF */
+	h'AAAA' E->D, or DZ rX r10 RAMF;	/* Y= AAAA */
+	h'5555' E->D, or DZ rX r5 RAMF;		/* Y= 5555 */
+	or ZA r0, cjp Iz/ fail;			/* Y= 0000 */
+
+	/* AM29101:	I8-6=	QREG
+	 *		I5-3=	EXNOR ADD
+	 *		I2-0=	DA ZQ
+	 *		A3-0=	r5
+	 * AM2904:	I12-10=	0->C
+	 *		link=	Co
+	 */
+	h'AAAA' E->D, exnor DA r5 rX QREG;	/* Y= 0000 Q= 0000 */
+	add ZQ, cjp Iz/ fail;			/* Y= 0000 Q= 0000 */
+
+	/* AM29101:	A3-0=	r10
+	 * AM2904:	I12-10=	1->C
+	 */
+	add1 AB r10 r5, cjp Iz/ fail;		/* Y= 0000 Q= 0000 */
+
+	/* AM29101:	I5-3=	SUBS
+	 *		I2-0=	AQ
+	 * AM2904:	I12-10=	Cx->C
+	 *		link=	Cx
+	 */
+	addIc AB r10 r10 QREG;			/* Y= 5555 Q= 5555 */
+	subs AQ r5, cjp Iz/ fail;		/* Y= 0000 Q= 5555 */
+
+	/* AM29101:	I8-6=	RAMA
+	 *		I5-3=	NOTRS
+	 */
+	notrs AQ r10 r1 RAMF;	 		/* Y= 5555 Q= 5555 r1= 5555 */
+	subs AB r5 r1 RAMA, cjp Iz/ fail;	/* Y= 5555 Q= 5555 r1= 0000 */
+	or ZA r1, cjp Iz/ fail;			/* Y= 0000 Q= 5555 r1= 0000 */
+
+	/* AM2904:	I5-0=	LOAD Msle
+	 *		link=	Iovr
+	 */
+	r5 cmp r10, I->M;			/* Y= AAAB Q= 5555 r1= 0000 */
+	cjp Msle fail;				/* Y= XXXX Q= 5555 r1= 0000 */
+
+	/* AM29101:	A3-0=	r15
+	 * AM2904:	I5-0=	In/
+	 *		link=	In
+	 */
+	or ZA r15, cjp In/ fail;		/* Y= FFFF Q= 5555 r1= 0000 */
+
+	/* AM29101:	I5-3=	RAMD
+	 * AM2904:	I9-6=	0>
+	 *		link=	SIOn
+	 */
+	or ZA r10 r1 RAMD, shift 0>;		/* Y= AAAA Q= 5555 r1= 5555 */
+	subs AB r5 r1, cjp Iz/ fail;		/* Y= 0000 Q= 5555 r1= 5555 */
+
+	/* AM2904:	I9-6=	rot>
+	 *		link=	SIOo
+	 */
+	or ZA r1 r1 RAMD, shift rot>;		/* Y= 5555 Q= 5555 r1= AAAA */
+	subs AB r10 r1, cjp Iz/ fail;		/* Y= 0000 Q= 5555 r1= AAAA */
+
+	/* AM29101:	I8-6=	RAMU
+	 */
+	or ZA r1 r1 RAMU, shift rot<;		/* Y= AAAA Q= 5555 r1= 5555 */
+	subs AB r5 r1, cjp Iz/ fail;		/* Y= 0000 Q= 5555 r1= 5555 */
+
+	/* AM2904:	I9-6=	rot<<
+	 *		link=	QIOo QIOn
+	 */
+	or ZA r1 r1 RAMQU, shift rot<<;		/* Y= 5555 Q= AAAA r1= AAAA */
+	subs AB r10 r1, cjp Iz/ fail;		/* Y= 0000 Q= AAAA r1= AAAA */
+	subs AQ r10, cjp Iz/ fail;		/* Y= 0000 Q= AAAA r1= AAAA */
+
+	/* AM2904:	I9-6=	Mc<<1
+	 *		I5-0=	Mc
+	 */
+	or ZA r5 r1 RAMU, shift Mc<<1;		/* Y= 5555 Q= 5555 r1= AAAA */
+	cjp Mc fail;				/* Y= XXXX Q= 5555 r1= AAAA */
+
+	/* AM2904:	I12-10=	Mc->C
+	 *		I5-0=	LWCI
+	 *		link=	Ic
+	 */
+	or ZA r0, Ic/->M;			/* Y= 0000 Q= 5555 r1= AAAA */
+	addMc ZA r15 r1 RAMF;		 	/* Y= 0000 Q= 5555 r1= 0000 */
+	test r0, cjp Iz/ fail;		 	/* Y= 0000 Q= 5555 r1= 0000 */
+
+	/* AM29101:	mult_en
+	 */
+	or ZA r0 rX QREG;			/* Y= 0000 Q= 0000 r1= AAAA */
+	or ZA r0 r1 RAMF;			/* Y= 0000 Q= 0000 r1= 0000 */
+	add AB r15 r1 RAMQD, shift 0>, mult;	/* Y= 0000 Q= 0000 r1= 0000 */
+	or ZA r1, cjp Iz/ fail;	 		/* Y= 0000 Q= 0000 r1= 0000 */
+
+	/* AM29101:	addIc
+	 */
+	or ZA r5 r1 RAMF;			/* Y= 5555 r1= 5555 */
+	addIc AB r1 r1 RAMF;			/* Y= AAAA r1= AAAA */
+	addIc AB r1 r1 RAMF;			/* Y= 5555 r1= 5555 */
+	subs AB r1 r5, cjp Iz/ fail;		/* Y= 0000 r1= 5555 */
+
+	L_INTR E-> r0;				/* Test passed, generate int */
+	r0 ->LED;
+	TEST_LED E-> r0;			/* Clear interrupt */
+	r0 ->LED;
+	jmp '$';				/* Loop forever */
+
+fail:	ERR_LED E-> r0;				/* Test failed, show error */
+	r0 ->LED;
+	
+	/* Loop displaying register values so as to aid debugging */
+disp:	r0 ->Y;					/* 0000 */
+	r15 ->Y;				/* FFFF */
+	r10 ->Y;				/* AAAA */
+	r5 ->Y;					/* 5555 */
+	Q->Y;					/* XXXX */
+	r1 ->Y, jmp disp;			/* XXXX */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;

@@ -1,0 +1,1188 @@
+/*
+ *	%W%	Series3	OBP
+ *
+ *	Series 3 output bitslice processor micro instruction definition.
+ *
+ *	Microinstruction format:
+ *
+ *	Field name	Function			Position
+ *
+ *	instr_len	2925 cycle length		63-61
+ *	main_ldh	Load main most sig address	60
+ *	main_ldl	Load main least sig address	59
+ *	main_cycle	Main cycle			58
+ *	local_cycle	Local cycle			57
+ *	local_ld	Load local address		56
+ *	incr/ack	Increment/acknowledge cycle	55
+ *	emit_en		Emit enable			54
+ *	i/o		input/output			53
+ *	r/w		read/write			52
+ *	---		2904 control			51-39
+ *	cin (def a)		I12-11				51-50
+ *	cin (def b)		I12-11,1			51-50,41
+ *	cin (def c)		I12-11,3-1			51-50,43-41
+ *	link			I10-6				49-45
+ *	ct			I4-0				44-40
+ *	msr			I4-0				44-40
+ *	msr_en			CEm/				39
+ *	---		29101 control			38-21
+ *	mult_en			Q0/ to I1 enable		38
+ *	dst			I8-6 destination control	37-35
+ *	op			I5-3 operation control		34-32
+ *	src			I2-0 source operands control	31-29
+ *	Breg			BREG				28-25
+ *	Areg			AREG				24-21
+ *	---		2910 control			20-16
+ *	am2910			I3-0				20-17
+ *	cc_en			CCEN/				16
+ *	---		Next address/Emit		15-0
+ *	addr			Next address			11-0
+ *	emit			Emit				15-0
+ *
+ *	N.B.	Am2904-I5 is tied high.
+ *
+ *	All enable bits have been coded as active high, i.e. 1 is
+ *	assigned to enable the function.  Inversion will take place
+ *	automatically if the hardware bit is active low.
+ *
+ *	Author:	J A Hall
+ *	Date:	22 Nov 86
+ */
+
+heading 'Series 3 output bitslice instruction definition, version %I%';
+
+eject;
+/* -------------------------- Predefined constants -------------------------- */
+
+/* LED register function bits */
+L_RESET		equ	h'0080';	/* Reset status */
+L_INTR		equ	h'0040';	/* Generate VME interrupt */
+
+/* Status register bit definitions */
+S_INTR		equ	h'0008';	/* To VME interrupt (active low) */
+S_BOOT/TF	equ	h'0004';	/* Boot (high)/TF interrupt (low) */
+S_MS_MSK	equ	h'0003';	/* Main ram size mask */
+
+M_BASE_PAGE	equ	h'40';		/* Main ram base page address */
+
+eject;
+/* ------------------------- Instruction definition ------------------------- */
+obp: instruction version('@(#)obp.mdl	1.1'), length(64);
+
+/* --- Am2925 cycle length */
+instr_len:	bits(63..61), values(	
+	b'000':	LEN3,
+	b'001':	LEN4,
+	b'101':	LEN5,
+	b'111':	LEN6,
+	b'011':	LEN7,
+	b'010':	LEN8,
+	b'110':	LEN9,
+	b'100':	LEN10),
+default(LEN3);
+
+/* --- Main ram high address load */
+main_ldh:	bits(60), invert, default(b'0');
+
+/* --- Main ram low address load */
+main_ldl:	bits(59), invert, default(b'0');
+
+/* --- Main ram cycle */
+main_cycle:	bits(58), invert, default(b'0');
+
+/* --- Local ram cycle */
+local_cycle:	bits(57), invert, default(b'0');
+
+/* --- Local ram address load */
+local_ld:	bits(56), invert, default(b'0');
+
+/* --- Increment/acknowledge cycle. Increment/no increment if local or main
+ * cycle active. No ack/ack if i/o active.
+ */
+incr/ack:	bits(55), default(b'0');
+
+/* --- Emit enable */
+emit_en:	bits(54), invert, default(b'0');
+
+/* --- I/O cycle */
+i/o:	bits(53), invert, default(b'0');
+
+/* --- Read/write cycle */
+r/w:	bits(52), values(
+	b'0':	READ,
+	b'1':	WRITE);
+
+/* --- Am2904 shift linkage multiplexor */
+link:	bits(49..45), values(
+	b'00000':	0>,		/* Single down from 0 */
+	b'00001':	1>,		/* Single down from 1 */
+	b'00010':	0>Mc,		/* Single down from 0 to Mc */
+	b'00011':	1>>,		/* Double down from 1 */
+	b'00100':	Mc>>,		/* Double down from Mc */
+	b'00101':	Mn>>,		/* Double down from Mn */
+	b'00110':	0>>,		/* Double down from 0 */
+	b'00111':	0>>Mc,		/* Double down from 0 to Mc */
+	b'01001':	Mc>Mc,		/* Single down from Mc to Mc */
+	b'01010':	rot>,		/* Single rotate down */
+	b'01011':	Ic>>,		/* Double down from Ic */
+	b'01110':	In^Iovr>>,	/* Double down from In ^ Iovr */
+	b'01111':	rot>>,		/* Double rotate down */
+
+	b'10000':	Mc<0,		/* Single up from 0 to Mc */
+	b'10001':	Mc<1,		/* Single up from 1 to Mc */
+	b'10010':	<0,		/* Single up from 0 */
+	b'10011':	<1,		/* Single up from 1 */
+	b'10100':	Mc<<0,		/* Double up to Mc from 0 */
+	b'10101':	Mc<<1,		/* Double up to Mc from 1 */
+	b'10110':	<<0,		/* Double up from 0 */
+	b'10111':	<<1,		/* Double up from 1 */
+	b'11001':	Mc<Mc,		/* Single up from Mc to Mc */
+	b'11010':	rot<,		/* Single rotate up */
+	b'11011':	<Mc,		/* Single up from Mc */
+	b'11111':	rot<<);		/* Double rotate up */
+
+case of
+0: begin
+	/* --- Carry-in control multiplexor, 3-bit */
+	cin:	bits(51..50, 41), values(b'111': Mc->C);
+end;
+
+1: begin	
+	/* --- Carry-in control multiplexor, 5-bit */
+	cin:	bits(51..50, 43..41), values(
+		b'11100': Mc/->C,
+		b'11010': READ_ML,
+		b'11110': TEST_ML);
+end;
+
+2: begin
+	/* --- Carry-in control multiplexor, 2-bit */
+	cin:	bits(51..50), values(
+		b'00':	0->C,
+		b'01':	1->C,
+		b'10':	Cx->C),
+	default(0->C);
+
+	case of
+	0: begin
+		/* --- Machine status register */
+		msr:	bits(44..40), values(
+			b'01000':	LWCI,	/* Load with Ic/ */
+			b'00000':	LOAD);	/* Load */
+	end;
+
+	1: begin
+		/* --- Condition code output (CT) */
+		ct:	bits(44..40), values(
+			/* MSR comparisons after A - B */
+			b'00101':	 Meq,	/* A == B */
+			b'00100':	 Mne,	/* A != B */
+
+			/* MSR signed comparisons after A - B */
+			b'00010':	 Msge,	/* A >= B */
+			b'00011':	 Mslt,	/* A < B */
+			b'00000':	 Msgt,	/* A > B */
+			b'00001':	 Msle,	/* A <= B */
+
+			/* MSR unsigned comparisons after A - B */
+			b'01011':	 Muge,	/* A >= B */
+			b'01010':	 Mult,	/* A < B */
+			b'01100':	 Mugt,	/* A > B */
+			b'01101':	 Mule,	/* A <= B */
+
+			/* I comparisons after A - B */
+			b'10101':	 Ieq,	/* A == B */
+			b'10100':	 Ine,	/* A != B */
+
+			/* I signed comparisons after A - B */
+			b'10010':	 Isge,	/* A >= B */
+			b'10011':	 Islt,	/* A < B */
+			b'10000':	 Isgt,	/* A > B */
+			b'10001':	 Isle,	/* A <= B */
+
+			/* I unsigned comparisons after A - B */
+			b'11011':	 Iuge,	/* A >= B */
+			b'11010':	 Iult,	/* A < B */
+			b'11100':	 Iugt,	/* A > B */
+			b'11101':	 Iule,	/* A <= B */
+
+			/* MSR tests */
+			b'00101':	 Mz,	/* Mz */
+			b'00100':	 Mz/,	/* Mz/ */
+			b'00111':	 Movr,	/* Movr */
+			b'00110':	 Movr/, /* Movr/ */
+			b'01011':	 Mc,	/* Mc */
+			b'01010':	 Mc/,	/* Mc/ */
+			b'01111':	 Mn,	/* Mn */
+			b'01110':	 Mn/,	/* Mn/ */
+
+			/* I tests */
+			b'10101':	 Iz,	/* Iz */
+			b'10100':	 Iz/,	/* Iz/ */
+			b'10111':	 Iovr,	/* Iovr */
+			b'10110':	 Iovr/, /* Iovr/ */
+			b'11011':	 Ic,	/* Ic */
+			b'11010':	 Ic/,	/* Ic/ */
+			b'11111':	 In,	/* In */
+			b'11110':	 In/);	/* In/ */
+	end /* End condition code (CT) */;
+	endCase;
+end /* Carry in control multiplexor, 2-bit */;
+endCase;
+
+/* --- MSR enable */
+msr_en:	bits(39), invert, default(b'0');
+
+/* --- Multiply enable, connects Q0/ to I1 */
+mult_en:	bits(38), default(b'0');
+
+/* --- Am29101 ALU destination control */
+dst:	bits(37..35), values(
+	o'0':	QREG,
+	o'1':	NOP,
+	o'2':	RAMA,
+	o'3':	RAMF,
+	o'4':	RAMQD,
+	o'5':	RAMD,
+	o'6':	RAMQU,
+	o'7':	RAMU),
+default(NOP);
+
+/* --- Am29101 ALU operation control */
+op:	bits(34..32), values(	
+	o'0':	ADD,
+	o'1':	SUBR,
+	o'2':	SUBS,
+	o'3':	OR,
+	o'4':	AND,
+	o'5':	NOTRS,
+	o'6':	EXOR,
+	o'7':	EXNOR);
+
+/* --- Am29101 ALU source operand control */
+src:	bits(31..29), values(
+	o'0':	AQ,
+	o'1':	AB,
+	o'2':	ZQ,
+	o'3':	ZB,
+	o'4':	ZA,
+	o'5':	DA,
+	o'6':	DQ,
+	o'7':	DZ);
+
+/* --- A register select */
+Areg:	bits(24..21), values(
+	h'0':	r0,
+	h'1':	r1,
+	h'2':	r2,
+	h'3':	r3,
+	h'4':	r4,
+	h'5':	r5,
+	h'6':	r6,
+	h'7':	r7,
+	h'8':	r8,
+	h'9':	r9,
+	h'A':	r10,
+	h'B':	r11,
+	h'C':	r12,
+	h'D':	r13,
+	h'E':	r14,
+	h'F':	r15,
+	h'0':	rX),	/* Don't care register */
+default(rX);
+
+/* --- B register select */
+Breg:	bits(28..25), values(
+	h'0':	r0,
+	h'1':	r1,
+	h'2':	r2,
+	h'3':	r3,
+	h'4':	r4,
+	h'5':	r5,
+	h'6':	r6,
+	h'7':	r7,
+	h'8':	r8,
+	h'9':	r9,
+	h'A':	r10,
+	h'B':	r11,
+	h'C':	r12,
+	h'D':	r13,
+	h'E':	r14,
+	h'F':	r15,
+	h'0':	rX),	/* Don't care register */
+default(rX);
+
+/* --- Am2910 sequencer */
+am2910:	bits(20..17), default(h'E');	/* Continue */
+
+/* --- Am2910 CC enable */
+cc_en:	bits(16), invert, default(b'0');
+
+case of
+0: begin
+	/* --- Next address */
+	addr:	bits(11..0);
+end;
+
+1: begin
+	/* --- Constant emit field */
+	emit:	bits(15..0);
+end;
+endCase;
+
+endInstruction;
+
+eject;
+/* ------------------------ Am2910 macro definitions ---------------------------
+ *
+ *	Name	Cond	Parameter	Description
+ *
+ *	jz	-	-		Jump zero 
+ *	jsb	-	addr		Unconditional jump-to-subroutine PL 
+ *	cjs	Yes	addr		Conditional jump-to-subroutine PL 
+ *	jmp	-	addr		Unconditional jump PL 
+ *	cjp	Yes	addr		Conditional jmp PL 
+ *	phlc	-	cnt		Push and load counter 
+ *	push	Yes	cnt		Push/conditional load counter 
+ *	jsrp	Yes	addr		Conditional jump-to-subroutine R/PL 
+ *	jrp	Yes	addr		Conditional jump R/PL 
+ *	rfct	-	-		Repeat loop if counter != 0 
+ *	rpct	-	addr		Repeat PL if counter != 0 
+ *	rtn	-	-		Unconditional return-from-subroutine 
+ *	crtn	Yes	-		Conditional return-from-subroutine 
+ *	jpp	-	addr		Unconditional jump PL and pop 
+ *	cjpp	Yes	addr		Conditional jump PL and pop 
+ *	ldct	-	cnt		Load counter and continue 
+ *	loop	Yes	-		Test end-of-loop 
+ *	cont	-	-		Continue 
+ *	twb	Yes	addr		Three-way branch 
+ *	cjs_Blkno -	addr		CJS on last word in 128 word block
+ */
+
+macro jz;
+begin
+	am2910 = h'0', cc_en = 0
+endm;
+
+macro jsb &addr;
+begin
+	am2910 = h'1', cc_en = 0, addr = &addr
+endm;
+
+macro cjs &cond &addr;
+begin
+	ct = &cond, am2910 = h'1', cc_en = 1, addr = &addr
+endm;
+
+macro jmp &addr;
+begin
+	am2910 = h'3', cc_en = 0, addr = &addr
+endm;
+
+macro cjp &cond &addr;
+begin
+	ct = &cond, am2910 = h'3', cc_en = 1, addr = &addr
+endm;
+
+macro phlc &cnt;
+begin
+	am2910 = h'4', cc_en = 0, addr = &cnt
+endm;
+
+macro push &cond &cnt;
+begin
+	am2910 = h'4', cc_en = 1,
+	if ('&cond' != '<nil>')
+		ct = &cond, addr = &cnt
+	endIf
+endm;
+
+macro jsrp &cond &addr;
+begin
+	ct = &cond, am2910 = h'5', cc_en = 1, addr = &addr
+endm;
+
+macro jrp &cond &addr;
+begin
+	ct = &cond, am2910 = h'7', cc_en = 1, addr = &addr
+endm;
+
+macro rfct;
+begin
+	am2910 = h'8', cc_en = 0
+endm;
+
+macro rpct &addr;
+begin
+	am2910 = h'9', cc_en = 0, addr = &addr
+endm;
+
+macro rtn;
+begin
+	am2910 = h'A', cc_en = 0
+endm;
+
+macro crtn &cond;
+begin
+	ct = &cond, am2910 = h'A', cc_en = 1
+endm;
+
+macro jpp &addr;
+begin
+	am2910 = h'B', cc_en = 0, addr = &addr
+endm;
+
+macro cjpp &cond &addr;
+begin
+	ct = &cond, am2910 = h'B', cc_en = 1, addr = &addr
+endm;
+
+macro ldct &cnt;
+begin
+	am2910 = h'C', cc_en = 0, addr = &cnt
+endm;
+
+macro loop &cond;
+begin
+	ct = &cond, am2910 = h'D', cc_en = 1
+endm;
+
+macro cont;
+begin
+	am2910 = h'E', cc_en = 0
+endm;
+
+macro twb &cond &addr;
+begin
+	ct = &cond, am2910 = h'F', cc_en = 1, addr = &addr
+endm;
+
+macro cjs_Blkno &addr;
+begin
+	cin = TEST_ML, am2910 = h'1', cc_en = 1, addr = &addr
+endm;
+
+eject;
+/* --------------- Am29101 basic arithmetic macro definitions ------------------
+ *
+ *	Name	Parameters	Description
+ *	
+ *	alu	op src A B dst	General ALU
+ *	add	src A B dst	R + S
+ *	add1	src A B dst	R + S + 1
+ *	addMc	src A B dst	R + S + Mc
+ *	addIc	src A B dst	R + S + Ic
+ *	subr	src A B dst	S - R
+ *	subr1	src A B dst	S - R - 1
+ *	subrMc	src A B dst	S - R - Mc
+ *	subs	src A B dst	R - S
+ *	subs1	src A B dst	R - S - 1
+ *	subsMc	src A B dst	R - S - Mc
+ *	or	src A B dst	R or S
+ *	and	src A B dst	R and S
+ *	notrs	src A B dst	R/ and S
+ *	exor	src A B dst	R exor S
+ *	exnor	src A B dst	R exnor S
+ */
+
+macro alu &op &src &Areg &Breg &dst;
+begin
+	op = &op, src = &src,
+	if ('&Areg' != '<nil>')
+		Areg = &Areg,
+	endIf
+	if ('&Breg' != '<nil>')
+		Breg = &Breg,
+	endIf
+	if ('&dst' != '<nil>')
+		dst = &dst,
+	endIf
+endm;
+
+macro add &src &Areg &Breg &dst;
+begin
+	alu ADD &src &Areg &Breg &dst
+endm;
+
+macro add1 &src &Areg &Breg &dst;
+begin
+	cin = 1->C, alu ADD &src &Areg &Breg &dst
+endm;
+
+macro addMc &src &Areg &Breg &dst;
+begin
+	cin = Mc->C, alu ADD &src &Areg &Breg &dst
+endm;
+
+macro addIc &src &Areg &Breg &dst;
+begin
+	cin = Cx->C, alu ADD &src &Areg &Breg &dst
+endm;
+
+macro subr &src &Areg &Breg &dst;
+begin
+	cin = 1->C, alu SUBR &src &Areg &Breg &dst
+endm;
+
+macro subr1 &src &Areg &Breg &dst;
+begin
+	cin = 0->C, alu SUBR &src &Areg &Breg &dst
+endm;
+
+macro subrMc &src &Areg &Breg &dst;
+begin
+	cin = Mc/->C, alu SUBR &src &Areg &Breg &dst
+endm;
+
+macro subs &src &Areg &Breg &dst;
+begin
+	cin = 1->C, alu SUBS &src &Areg &Breg &dst
+endm;
+
+macro subs1 &src &Areg &Breg &dst;
+begin
+	cin = 0->C, alu SUBS &src &Areg &Breg &dst
+endm;
+
+macro subsMc &src &Areg &Breg &dst;
+begin
+	cin = Mc/->C, alu SUBS &src &Areg &Breg &dst
+endm;
+
+macro or &src &Areg &Breg &dst;
+begin
+	alu OR &src &Areg &Breg &dst
+endm;
+
+macro and &src &Areg &Breg &dst;
+begin
+	alu AND &src &Areg &Breg &dst
+endm;
+
+macro notrs &src &Areg &Breg &dst;
+begin
+	alu NOTRS &src &Areg &Breg &dst
+endm;
+
+macro exor &src &Areg &Breg &dst;
+begin
+	alu EXOR &src &Areg &Breg &dst
+endm;
+
+macro exnor &src &Areg &Breg &dst;
+begin
+	alu EXNOR &src &Areg &Breg &dst
+endm;
+
+eject;
+/* -------------------------- Am29101 short macros -----------------------------
+ *
+ *	Param	Name	Param	Description
+ *	
+ *	-	D->	reg	D bus to register
+ *	-	D->Y	-	D bus to Y bus
+ *	-	D->Q	-	D bus to Q register
+ *
+ *	-	0->	reg	0 to register
+ *	-	0->Y	-	0 to Y bus
+ *	-	0->Q	-	0 to Q register
+ *
+ *	-	Q->Y	-	Q register to Y bus
+ *	-	Q->	reg	Q register to register
+ *
+ *	reg	->Y	-	Register to Y bus
+ *	reg	->Q	-	Register to Q register
+ *	reg	->	reg	Register to register
+ *	reg	cmp	reg	Compare registers
+ *	reg	+=	reg	Register = register + register
+ *	reg	-=	reg	Register = register - register
+ *
+ *	-	test	reg	Test register
+ *	-	inc	reg	Increment register
+ *	-	dec	reg	Decrement register
+ *	-	neg	reg	Negate register
+ *
+ *	-	testQ	reg	Test Q register
+ *	-	incQ	reg	Increment Q register
+ *	-	decQ	reg	Decrement Q register
+ *	-	negQ	reg	Negate Q register
+ *	reg	cmpQ	-	Compare register with Q register
+ */
+
+macro D-> &reg;
+begin
+	or DZ rX &reg RAMF
+endm;
+
+macro D->Y;
+begin
+	or DZ
+endm;
+
+macro D->Q;
+begin
+	or DZ rX rX QREG
+endm;
+
+macro 0-> &reg;
+begin
+	and ZA rX &reg RAMF
+endm;
+
+macro 0->Y;
+begin
+	and ZA
+endm;
+
+macro 0->Q;
+begin
+	and ZA rX rX QREG
+endm;
+
+macro Q->Y;
+begin
+	or ZQ
+endm;
+
+macro Q-> &reg;
+begin
+	or ZQ rX &reg RAMF
+endm;
+
+macro &reg ->Y;
+begin
+	or ZA &reg
+endm;
+
+macro &reg ->Q;
+begin
+	or ZA &reg rX QREG
+endm;
+
+macro &src -> &dst;
+begin
+	or ZA &src &dst RAMF
+endm;
+
+macro &Areg cmp &Breg;
+begin
+	subs AB &Areg &Breg
+endm;
+
+macro &dst += &src;
+begin
+	add AB &src &dst RAMF
+endm;
+
+macro &dst -= &src;
+begin
+	subr AB &src &dst RAMF
+endm;
+
+macro test &reg;
+begin
+	or ZA &reg
+endm;
+
+macro inc &reg;
+begin
+	add1 ZB rX &reg RAMF
+endm;
+
+macro dec &reg;
+begin
+	subr1 ZB rX &reg RAMF
+endm;
+
+macro neg &reg;
+begin
+	subs ZB rX &reg RAMF
+endm;
+
+macro testQ;
+begin
+	or ZQ
+endm;
+
+macro incQ;
+begin
+	add1 ZQ rX rX QREG
+endm;
+
+macro decQ;
+begin
+	subr1 ZQ rX rX QREG
+endm;
+
+macro negQ;
+begin
+	subs ZQ rX rX QREG
+endm;
+
+macro &reg cmpQ;
+begin
+	subs AQ &reg
+endm;
+
+eject;
+/* ------------------- Emit, Memory, and I/O instructions ----------------------
+ *
+ *	Param	Name	Param	Description
+ *	
+ *	-	Y->L	-	Y bus to local ram address
+ *	-	Y->ML	-	Y bus to main ram low address
+ *	-	Y->MH	-	Y bus to main ram high address
+ *	-	Y
+ *	-	Y->L<>	-	Y bus to local ram contents
+ *	-	Y->M<>	-	Y bus to main ram contents
+ *
+ *	-	D->L	-	D bus to local ram address
+ *	-	D->ML	-	D bus to main ram low address
+ *	-	D->MH	-	D bus to main ram high address
+ *	-	D->MCL	-	D bus to main ram low address, clear high addr
+ *
+ *	const	E->D	-	Emit to D bus
+ *	const	E->Y	-	Emit to Y bus
+ *	const	E->L	-	Emit to local ram address
+ *	const	E->ML	-	Emit to main ram low address
+ *	const	E->MH	-	Emit to main ram high address
+ *	const	E->MCL	-	Emit to main ram low address, clear high address
+ *	const	E->L<>	-	Emit to local ram contents
+ *	const	E->M<>	-	Emit to main ram contents
+ *	const	E->	reg	Emit to register
+ *	const	E->Q	-	Emit to Q register
+ *
+ *	-	BASE_PAGE->MH -	Load main ram base page address
+ *
+ *	reg	->L	-	Register to local ram address
+ *	reg	->ML	-	Register to main ram low address
+ *	reg	->MH	-	Register to main ram high address
+ *	reg	->MCL	-	Register to main ram low addr, clear high addr
+ *	reg	->L<>	-	Register to local ram contents
+ *	reg	->M<>	-	Register to main ram contents
+ *
+ *	-	Q->L<>	-	Q register to local ram contents
+ *	-	Q->M<>	-	Q register to main ram contents
+ *
+ *	-	0->L<>	-	Zero to local ram contents
+ *	-	0->M<>	-	Zero to main ram contents
+ *
+ *	-	L<>->D	-	Local ram contents to D bus
+ *	-	L<>->Y	-	Local ram contents to Y bus
+ *	-	L<>->L	-	Local ram contents to local ram address
+ *	-	L<>->ML	-	Local ram contents to main ram low address
+ *	-	L<>->MH	-	Local ram contents to main ram high address
+ *	-	L<>->MCL -	Local ram to main ram low addr, clear high addr
+ *	-	L<>->	reg	Local ram contents to register
+ *	-	L<>->Q	-	Local ram contents to Q register
+ *	-	L<>cmp	reg	Compare local ram with register
+ *	reg	cmpL<>	-	Compare register with local ram
+ *
+ *	-	M<>->D	-	Main ram contents to D bus
+ *	-	M<>->Y	-	Main ram contents to Y bus
+ *	-	M<>->L	-	Main ram contents to local ram address
+ *	-	M<>->ML	-	Main ram contents to main ram low address
+ *	-	M<>->MH	-	Main ram contents to main ram high address
+ *	-	M<>->MCL -	Main ram conts to main ram low addr, clear high
+ *	-	M<>->L<> -	Main ram contents to local ram contents
+ *	-	M<>->	reg	Main ram contents to register
+ *	-	M<>->Q	-	Main ram contents to Q register
+ *
+ *	-	Y->IO	const	Y bus to I/O bus
+ *	const	IO->D	-	I/O bus to D bus
+ *	const	IO->	reg	I/O bus to register
+ *	reg	->IO	const	Register to I/O bus
+ *	reg	->IOTEST-> reg	I/O bus test
+ *	-	0->IO	const	Zero to I/O bus
+ *	-	Y->LED	-	Y bus to LED register
+ *	reg	->LED	-	Register to LED register
+ *	-	0->LED	-	Zero to LED register
+ *	-	STAT->D	-	Status register to D bus
+ *	-	STAT->	reg	Status register to register
+ *
+ *	-	ML->D	-	Main ram address to D bus
+ *	-	ML->Y	-	Main ram address to Y bus
+ *	-	ML->L<>	-	Main ram address to local ram contents
+ *	-	ML->	reg	Main ram address to register
+ *
+ *	-	noinc	-	Disable local/main auto increment
+ *	-	ack	-	Enable I/O acknowledge
+ */
+
+macro Y->L;
+begin
+	local_ld = 1
+endm;
+
+macro Y->ML;
+begin
+	main_ldl = 1
+endm;
+
+macro Y->MH;
+begin
+	main_ldh = 1
+endm;
+
+macro Y->MCL;
+begin
+	main_ldh = 1, main_ldl = 1
+endm;
+
+macro Y->L<>;
+begin
+	local_cycle = 1, r/w = WRITE
+endm;
+
+macro Y->M<>;
+begin
+	main_cycle = 1, r/w = WRITE
+endm;
+
+macro 0->L<>;
+begin
+	0->Y, Y->L<>
+endm;
+
+macro 0->M<>;
+begin
+	0->Y, Y->M<>
+endm;
+
+macro D->L;
+begin
+	D->Y, Y->L
+endm;
+
+macro D->ML;
+begin
+	D->Y, Y->ML
+endm;
+
+macro D->MH;
+begin
+	D->Y, Y->MH
+endm;
+
+macro D->MCL;
+begin
+	D->Y, Y->MCL
+endm;
+
+macro &const E->D;
+begin
+	emit = &const, emit_en = 1
+endm;
+
+macro &const E->Y;
+begin
+	'&const' E->D, D->Y
+endm;
+
+macro &const E->L;
+begin
+	'&const' E->Y, Y->L
+endm;
+
+macro &const E->ML;
+begin
+	'&const' E->Y, Y->ML
+endm;
+
+macro &const E->MH;
+begin
+	'&const' E->Y, Y->MH
+endm;
+
+macro &const E->MCL;
+begin
+	'&const' E->Y, Y->MCL
+endm;
+
+macro &const E->L<>;
+begin
+	'&const' E->Y, Y->L<>
+endm;
+
+macro &const E->M<>;
+begin
+	'&const' E->Y, Y->M<>
+endm;
+
+macro &const E-> &reg;
+begin
+	'&const' E->D, D-> &reg
+endm;
+
+macro &const E->Q;
+begin
+	'&const' E->D, D->Q
+endm;
+
+macro BASE_PAGE->MH;
+begin
+	M_BASE_PAGE E->MH;
+endm;
+
+macro &reg ->L;
+begin
+	&reg ->Y, Y->L
+endm;
+
+macro &reg ->ML;
+begin
+	&reg ->Y, Y->ML
+endm;
+
+macro &reg ->MH;
+begin
+	&reg ->Y, Y->MH
+endm;
+
+macro &reg ->MCL;
+begin
+	&reg ->Y, Y->MCL
+endm;
+
+macro &reg ->L<>;
+begin
+	&reg ->Y, Y->L<>
+endm;
+
+macro &reg ->M<>;
+begin
+	&reg ->Y, Y->M<>
+endm;
+
+macro Q->L<>;
+begin
+	Q->Y, Y->L<>
+endm;
+
+macro Q->M<>;
+begin
+	Q->Y, Y->M<>
+endm;
+
+macro L<>->D;
+begin
+	local_cycle = 1, r/w = READ
+endm;
+
+macro L<>->Y;
+begin
+	L<>->D, D->Y
+endm;
+
+macro L<>->L;
+begin
+	L<>->Y, Y->L
+endm;
+
+macro L<>->ML;
+begin
+	L<>->Y, Y->ML
+endm;
+
+macro L<>->MH;
+begin
+	L<>->Y, Y->MH
+endm;
+
+macro L<>->MCL;
+begin
+	L<>->Y, Y->MCL
+endm;
+
+macro L<>-> &reg;
+begin
+	L<>->D, D-> &reg
+endm;
+
+macro L<>->Q;
+begin
+	L<>->D, D->Q
+endm;
+
+macro L<>cmp &reg;
+begin
+	L<>->D, subs DA &reg
+endm;
+
+macro &reg cmpL<>;
+begin
+	L<>->D, subr DA &reg
+endm;
+
+macro M<>->D;
+begin
+	main_cycle = 1, r/w = READ
+endm;
+
+macro M<>->Y;
+begin
+	M<>->D, D->Y
+endm;
+
+macro M<>->L;
+begin
+	M<>->Y, Y->L
+endm;
+
+macro M<>->ML;
+begin
+	M<>->Y, Y->ML
+endm;
+
+macro M<>->MH;
+begin
+	M<>->Y, Y->MH
+endm;
+
+macro M<>->MCL;
+begin
+	M<>->Y, Y->MCL
+endm;
+
+macro M<>->L<>;
+begin
+	M<>->Y, local_cycle = 1
+endm;
+
+macro M<>-> &reg;
+begin
+	M<>->D, D-> &reg
+endm;
+
+macro M<>->Q;
+begin
+	M<>->D, D->Q
+endm;
+
+macro Y->IO &const;
+begin
+	emit = &const, i/o = 1, r/w = WRITE
+endm;
+
+macro &const IO->D;
+begin
+	emit = &const, i/o = 1, r/w = READ
+endm;
+
+macro &const IO-> &reg;
+begin
+	'&const' IO->D, D-> &reg
+endm;
+
+macro &reg ->IO &const;
+begin
+	&reg ->Y, Y->IO '&const'
+endm;
+
+macro &src ->IOTEST-> &dst;
+begin
+	or DZ &src &dst RAMA, Y->IO h'10'
+endm;
+
+macro 0->IO &const;
+begin
+	0->Y, Y->IO '&const'
+endm;
+
+macro Y->LED;
+begin
+	Y->IO h'0'
+endm;
+
+macro &reg ->LED;
+begin
+	&reg ->Y, Y->LED
+endm;
+
+macro 0->LED;
+begin
+	0->IO h'0'
+endm;
+
+macro STAT->D;
+begin
+	h'8' IO->D
+endm;
+
+macro STAT-> &reg;
+begin
+	STAT->D, D-> &reg
+endm;
+
+macro ML->D;
+begin
+	cin = READ_ML
+endm;
+
+macro ML->Y;
+begin
+	ML->D, D->Y
+endm;
+
+macro ML->L<>;
+begin
+	ML->Y, Y->L<>
+endm;
+
+macro ML-> &reg;
+begin
+	ML->D, D-> &reg
+endm;
+
+macro noinc;
+begin
+	incr/ack = 1
+endm;
+
+macro ack;
+begin
+	incr/ack = 1
+endm;
+
+eject;
+/* ------------------------------ Miscellaneous --------------------------------
+ *
+ *	Param	Name	Param	Description
+ *
+ *	-	shift	type	Setup Am2904 shift linkage
+ *	-	I->M	-	Load Am2904 direct status inputs to MSR
+ *	-	Ic/->M	-	Load Am2904 direct status inputs to MSR with Ic/
+ *	-	mult	-	Multiply enable
+ *	-	len	num	Set instruction length
+ */
+
+macro shift &type;
+begin
+	link = &type
+endm;
+
+macro I->M;
+begin
+	msr = LOAD, msr_en = 1
+endm;
+
+macro Ic/->M;
+begin
+	msr = LWCI, msr_en = 1
+endm;
+
+macro mult;
+begin
+	mult_en = 1
+endm;
+
+macro len &num;
+begin
+	if (&num < 3 || &num > 10)
+		error 'Illegal instruction length';
+	else
+		instr_len = @ ('LEN' " '&num'),
+	endIf
+endm;
+
+endDefinition;

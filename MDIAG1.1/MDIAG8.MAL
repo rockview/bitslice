@@ -1,0 +1,133 @@
+/*
+ *	Series 3 output bitslice processor micro diagnostic.
+ *
+ *	Test 8 - Local ram.
+ *
+ *	PASS-	Write 0 to control word (locn 0) and interrupt.
+ *	FAIL-	Write register values to the following locns and interrupt:
+ *			0	control word, value non-zero
+ *			1	Data written
+ *			2	Data read
+ *			3	0
+ *			4	Word address
+ *
+ *	- Tests local ram with the following patterns:
+ *		0000
+ *		FFFF
+ *		AAAA
+ *		5555
+ *		address for data
+ *
+ *	Author:	J A Hall
+ *	Date:	26 Nov 86
+ */
+
+heading 'Series 3 output bitslice micro diagnostic, test 8, version 1.1';
+
+/* Led indicators */
+TEST_LED	equ	8;			/* Test number */
+ERR_LED		equ	(b'100000' + TEST_LED);	/* Failed */
+
+eject;
+segment	diag, abs(0);
+
+org	h'0';
+
+	L_INTR E-> r15;			/* Load interrupt bit for later */
+	TEST_LED E-> r14;		/* Show test number */
+	r14 ->LED;
+
+	h'0000' E-> r0;
+	jsb pat_test;
+
+	h'FFFF' E-> r0;
+	jsb pat_test;
+
+	h'AAAA' E-> r0;
+	jsb pat_test;
+
+	h'5555' E-> r0;
+	jsb pat_test;
+
+	jsb afd_test;
+
+	0->Y, Y->MCL;			/* Test passed */
+	0->M<>;				/* Write zero to control word */
+
+	r15 ->LED;			/* Generate interrupt */
+	r14 ->LED;			/* Clear interrupt */
+	jmp '$';			/* Loop forever */
+
+eject;
+/*
+ *	PAT_TEST
+ *
+ *	- Performs memory pattern test on every location in local ram.
+ *
+ *	in:
+ *		r0	pattern value
+ *
+ *	usage:
+ *		r0	data written
+ *		r1	data read
+ *		r2	address
+ */
+pat_test:
+	0-> r2, Y->L;			/* Load local address counter */
+
+l1:	r0 ->L<>, noinc;		/* Write data without auto increment */
+	L<>-> r1;			/* Read data */
+
+	r0 cmp r1, cjp Ine fail;	/* Any errors ? */
+
+	inc r2, cjp Iz/ l1;		/* Finished yet ? */
+
+	rtn;
+
+fail:	0->Y, Y->MCL;			/* Test failed, write register values */
+	1 E->M<>;			/* 0: Control word */
+	r0 ->M<>;			/* 1: Data written */
+	r1 ->M<>;			/* 2: Data read */
+	0->Y, Y->M<>;			/* 3: 0 */
+	r2 ->M<>;			/* 4: Word address */
+
+	r15 ->LED;			/* Generate interrupt */
+	ERR_LED E-> r14;		/* Clear interrupt */
+	r14 ->LED;
+
+	/* Loop passing register values to the Y bus so as to aid debugging */
+disp:	r0 ->Y;				/* Data written */
+	r1 ->Y;				/* Data read */
+	r2 ->Y, jmp disp;		/* Address */
+
+eject;
+/*
+ *	AFD_TEST
+ *
+ *	- Performs memory address for data test on every location in local ram.
+ *      First write address for data to all of memory and then read it back.
+ *      This ensures catching a non-incrementing address counter.
+ *
+ *	usage:
+ *		r1	data read
+ *		r2	address
+ */
+afd_test:
+	0-> r2, Y->L;			/* Load local address counter */
+
+	add1 ZA r2 r2 RAMA, Y->L<>, cjp Iz/ '$';	/* Write data */
+
+l2:	L<>-> r1;			/* Read data */
+	r2 cmp r1, cjp Ine afd_fail;	/* Any errors ? */
+
+	inc r2, cjp Iz/ l2;		/* Finished yet ? */
+
+	rtn;
+
+afd_fail:r2 -> r0, jmp fail;		/* Address for data test failed */
+
+org	h'fff';
+
+	jz;				/* Boot/TF interrupt via here */
+
+	end;
