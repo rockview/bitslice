@@ -260,7 +260,8 @@ developed and programmed in the 1980s.
 
 ### Addendum
 
-I noticed that the OBB diagnostic OBB.MAL apparently has old definition names from OBB.H. They seem to map to the new names as follows:
+I noticed that the OBB diagnostic OBB.MAL apparently has old definition names
+from OBB.H. They seem to map to the new names as follows:
 
 | **Old** | **New** |
 | :--- | :--- |
@@ -282,4 +283,12 @@ I noticed that the OBB diagnostic OBB.MAL apparently has old definition names fr
 | BAND_CNT | OBB_BAND_CNT |
 | LINE_CNT | OBB_LINE_CNT |
 
-I also noticed there doesn't seem to be a test for the halftone decoder. I have no idea why this would be omitted.
+I also noticed there doesn't seem to be a test for the halftone decoder. I have
+no idea why this would be omitted.
+
+I can't remember what the Cx input to the AM2904 is connected to. It is used by
+the addIc instruction, but that implies it is connected to Ic (immediate carry).
+I don't understand how the carry out of the ALU could be connected back to the
+carry in. How would the carry propagation settle? It is tested in MDIAG6.MAL
+where AAAA is added to AAAA and the result is apparently 5555 which would imply
+the carry in is 1. It is specifically tested for in LEN.C too. Oh, well!
