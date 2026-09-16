@@ -257,3 +257,29 @@ projects in my 37-year professional software engineering career.
 
 I hope this might be of interest to see how complex embedded systems were
 developed and programmed in the 1980s.
+
+### Addendum
+
+I noticed that the OBB diagnostic OBB.MAL apparently has old definition names from OBB.H. They seem to map to the new names as follows:
+
+| **Old** | **New** |
+| :--- | :--- |
+| RUNLAD | OBB_LINE_ADDR |
+| RUNADD | OBB_RUN_ADDR |
+| RUNMOD | OBB_RUN_MODE |
+| RUNDAT | OBB_RUN_DATA |
+| INC_BAND | OBB_BAND |
+| OUTMOD | OBB_OUT_MODE |
+| RES_BAND | OBB_RESET |
+| INTRUN | OBB_INTL_RUN |
+| PATRUN | OBB_PAT_RUN |
+| BITCON | OBB_BIT_CON |
+| BITDAT | OBB_BIT_DATA |
+| STATUS | OBB_STATUS |
+| READY | OBB_PIC_RDY |
+| NODATA | OBB_RUN_BSY? |
+| NOBAND | OBB_BAND_BSY? |
+| BAND_CNT | OBB_BAND_CNT |
+| LINE_CNT | OBB_LINE_CNT |
+
+I also noticed there doesn't seem to be a test for the halftone decoder. I have no idea why this would be omitted.
