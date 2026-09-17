@@ -286,9 +286,10 @@ from OBB.H. They seem to map to the new names as follows:
 I also noticed there doesn't seem to be a test for the halftone decoder. I have
 no idea why this would be omitted.
 
-I can't remember what the Cx input to the AM2904 is connected to. It is used by
-the addIc instruction, but that implies it is connected to Ic (immediate carry).
-I don't understand how the carry out of the ALU could be connected back to the
-carry in. How would the carry propagation settle? It is tested in MDIAG6.MAL
-where AAAA is added to AAAA and the result is apparently 5555 which would imply
-the carry in is 1. It is specifically tested for in LEN.C too. Oh, well!
+I can't remember what the Cx input to the AM2904 is connected to, but it is used
+by the addIc instruction which implies that it is connected to Ic (immediate
+carry). The only use I can find in the microcode is to add a register to itself
+and feed the carry out back into the carry in. Used inconjunction with a rotate
+left results in rotating the register left 2 places. I guess this works because
+there can be no further bit propagation since bit 0 will always have the value 0
+after the ADD.
