@@ -298,3 +298,13 @@ and feed the carry out back into the carry in. Used inconjunction with a rotate
 left results in rotating the register left 2 places. I guess this works because
 there can be no further bit propagation since bit 0 will always have the value 0
 after the ADD.
+
+The METASTEP DOS executables (MMD.EXE, MA.EXE, ML.EXE, and MF.EXE) were also on
+the floppy disks I recovered and I thought it would be interesting to run them
+again on my sources. I have a MacBook, so I tried to run them with emulation
+using DOSBox, DOSBox-X, and QEMU, but I couldn't get any of the programs to run
+properly. MMD.EXE seems to get stuck in an infinite loop with and only the
+header of a listing file is output. The other programs fail because I do not
+have any valid input files for them to process. Maybe there's a dependency on
+another file that I didn't copy? Too bad, it would have been fun to run them
+again.
