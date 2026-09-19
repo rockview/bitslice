@@ -52,12 +52,12 @@ was concerned, were:
 
 These components were all VMEbus cards that plugged into the same backplane. The
 GPP fed typesetting commands and data to the OBP that in turn processed them
-into black/white runs of pixel data that was written to the OBB. The OBB drove a
-LOU (Laser Output Unit) that modulated a scanning laser beam exposing
+into black/white runs of pixel data that were written to the OBB. The OBB drove a
+LOU (Laser Output Unit) that modulated a scanning laser beam exposing a moving
 photographic film. The output unit had resolution of 1000 dpi horizontally and
 vertically, spanning a 12 or 17 inch width. During development, we also had
 access to a custom laser printer that was connected to RIP and avoided having to
-develop photographic film.
+develop photographic film for testing.
 
 ### OBP Hardware
 
@@ -77,10 +77,10 @@ PROMs.
 
 * a 16-bit wide by 64KiW static RAM was used to back up registers, store variables,
 and maintain an list of active images called the image list. This is referred to
-*local* memory (L) by the microcode. 
+*local* (L) memory by the microcode. 
 
 * a 16-bt wide by 1-4MiW dynamic RAM was used to communicate with the GPP and
-store addition lists and image data. This is referred to as *main* memory (M) by
+store addition lists and image data. This is referred to as *main* (M) memory by
 the microcode and was accessible to the VMEbus.
 
 The bitslice was clocked at 30MHz and a single microinstruction typically
@@ -102,7 +102,7 @@ to the address space of the VMEbus and could therefore be initialized by the
 GPP.
 
 Instead of handling pixel data directly, the OBB contained several decoders that
-handled different types of image data:
+supported different types of image data:
 
 * character (text)
 * line art (graphic image)
@@ -111,10 +111,10 @@ handled different types of image data:
 * halftone
 
 Once the various decoder registers were set up for a scanline, image data could
-simply be copied from main memory into the OBB until the data for that scanline
-ended. The OBP then advanced to the next scanline and repeated the process. This
-made it very efficient to process image data since all run computation was
-handled in hardware.
+simply be copied by the OBP from main memory into the OBB until the data for
+that scanline ended. The OBP then advanced to the next scanline and repeated the
+process. This made it very efficient to process image data since all run
+computation was handled in hardware.
 
 ### GPP/OBP Communication
 
@@ -146,9 +146,10 @@ request another addition list from the GPP.
 
 Records that share the same priority are grouped together in the list. The group
 begins with a priority record followed by a list of image records to be typeset
-with that priority. A priority record specifies a numerical priority, OBB mode,
-and pattern. The pattern is optional but if present it is an A/B pattern or
-tint that is applied to all the images in the group. 
+with that priority. A priority record specifies a numerical priority, OBB mode
+(how data is combined with an output buffer), and pattern. The pattern is
+optional but if present it is an A/B pattern or tint that is applied to all the
+images in the group. 
 
 ### Image Lists
 
@@ -177,7 +178,7 @@ allocated to the image available for reuse.
 The microprogram that ran on the OBP was called the Buffer Load Process (BLP).
 
 The OBP was programmed using a set of METASTEP development tools from the STEP
-engineering company in Sunnyvale, California. These ran on the MS-DOS operating
+engineering company of Sunnyvale, California. These ran on the MS-DOS operating
 system and proved to be very flexible and reliable.
 
 In addition to the METASTEP tools I was also using an MKS Toolkit that provided
@@ -189,9 +190,10 @@ but I cannot remember if it had a hard disk.
 
 The target bitslice architecture was specified using the METASTEP Definition
 Language. This was complied into a into a definition file that subsequently
-guided the execution of the METASTEP Assembler. Relocatable object files could
-then be linked into a binary that was loaded into microprogram memory for
-execution. The microword field definitions are contained in file OBP.MDL.
+guided the execution of the METASTEP Assembler. The resulting relocatable object
+files could then be linked into a binary that was loaded into microprogram
+memory for execution. The microword field definitions are contained in file
+OBP.MDL.
 
 The METASTEP software was very permissive about the allowable characters for
 names of fields and macros (but not square brackets [], for some reason). For
@@ -232,9 +234,9 @@ would busy-wait for a band of scanlines to become available. Thus, it was easy
 to monitor the RIPs performance by observing the state of the BAND_WAIT LED.
 
 A technician in the lab built a simple circuit that would monitor the
-microprogram address and split it into two voltage components that could drive
-an oscilloscope in XY mode and thus reveal any unexpected hotspots in the
-microprogram.
+microprogram address and split and converted it into two voltage components that
+could drive an oscilloscope in XY mode and thus reveal any unexpected hotspots
+in the microprogram.
 
 ### Diagnostics
 
@@ -252,7 +254,7 @@ read by the GPP and compared to previously saved and verified scanline data.
 
 ### Miscellaneous
 
-The OBP was debugged using an oscilloscope and a logic analyzer.
+The OBP was debugged using visual output, an oscilloscope, and a logic analyzer.
 
 Two excellent software engineers wrote the code for the GPP and one exceptional
 hardware engineer designed the hardware. This is one of the most enjoyable
