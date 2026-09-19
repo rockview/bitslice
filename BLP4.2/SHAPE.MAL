@@ -505,7 +505,7 @@ eject;
  *	The square root calculation is performed using Newtons approximation.
  *	The value passed to this routine is fixed point 2-bit which yields
  *	a fixed point 1-bit result.  This leads to a greatly improved elliptical
- *	edge although the Lasercomp doesn't do this!
+ *	edge although the xxxxxxxxx doesn't do this!
  *
  *	The algorithm is as follows:
  *

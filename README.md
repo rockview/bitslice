@@ -86,8 +86,9 @@ the microcode and was accessible to the VMEbus.
 The bitslice was clocked at 30MHz and a single microinstruction typically
 executed in 3 cycles.
 
-All multiplies and divides were performed in software because no hardware was
-available for these operations.
+No dedicated multiply or divide hardware was available so these operations were
+performed in software. A 16 x 16 bit multiply took 1.7us and a 32 / 16 bit
+divide took 3.5us. 
 
 ### OBB Hardware
 
@@ -172,6 +173,8 @@ resources of these dead images, e.g. by making the image blocks that were
 allocated to the image available for reuse.
 
 ### OBP Software
+
+The microprogram that ran on the OBP was called the Buffer Load Process (BLP).
 
 The OBP was programmed using a set of METASTEP development tools from the STEP
 engineering company in Sunnyvale, California. These ran on the MS-DOS operating
