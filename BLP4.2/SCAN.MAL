@@ -26,7 +26,7 @@
  *	|cnt *2|             |             |  lo     hi  |repeat|edge address |
  *	+---------------------------------------------------------------------+
  *
- *	This algorithm is very largely based on Paul Hudson's CDP. The main
+ *	This algorithm is very largely based on xxxx xxxxxx's CDP. The main
  *	difference being that I'm using a slightly different edge description.
  *
  *	The image description is passed as a sequence of edges hereafter called

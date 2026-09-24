@@ -40,6 +40,32 @@ The scan object was added late in the development cycle and was hugely
 challenging to implement even though it was largely copied from working C code.
 Microcode is just more difficult to write and 16 registers is not enough!
 
+### Char Image Format
+
+The char image type encodes run data in a compact format.
+
+Images are represented by a series of adjacent scanlines that progress through
+the character from top to bottom. Each scanline consists of a series of 16-bit
+words. The value of these words indicate how the data is to be interpreted.
+
+A scanline that begins with a 0-word, and the following word is also 0, marks
+the end of the image. If the following word is non-0, it signals the number of
+times the data for the scanline that follows should be repeated.
+
+The bits of the remaining words of the scanline encode black and white runs of
+pixel data that are interpreted as follows.
+
+00bbbbbbbwwwwwww ; short black run, short white run
+1000000000000000 ; end of scanline
+10wwwwwwwwwwwwww ; long white run
+11bbbbbbbbbbbbbb ; long black run
+
+The microcode must detect end of image, scanline repetition, and end of scanline
+conditions but the run data is automatically decoded and assembled into a
+scanline buffer for output by the OBB.
+
+Other image formats operate in a similar fashion.
+
 ### RIP Hardware
 
 The important hardware components of the RIP, as far as the bitslice processor
