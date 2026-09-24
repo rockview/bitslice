@@ -55,12 +55,12 @@ times the data for the scanline that follows should be repeated.
 The bits of the remaining words of the scanline encode black and white runs of
 pixel data that are interpreted as follows.
 
-00bbbbbbbwwwwwww ; short black run, short white run
-1000000000000000 ; end of scanline
-10wwwwwwwwwwwwww ; long white run
-11bbbbbbbbbbbbbb ; long black run
+        00bbbbbbbwwwwwww ; short black run, short white run
+        1000000000000000 ; end of scanline
+        10wwwwwwwwwwwwww ; long white run
+        11bbbbbbbbbbbbbb ; long black run
 
-The microcode must detect end of image, scanline repetition, and end of scanline
+The microcode must detect end-of-image, scanline repetition, and end-of-scanline
 conditions but the run data is automatically decoded and assembled into a
 scanline buffer for output by the OBB.
 
