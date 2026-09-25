@@ -1,4 +1,4 @@
-## Microcode For The Series 3 Typesetter
+## Microcode for the Series 3 Typesetter
 
 The files in this directory were recently recovered from a set of 5-1/4 inch DOS
 floppy disks that I wrote nearly 40 years ago. They constitute a microprogram I
@@ -18,7 +18,7 @@ The RIP was capable of typesetting various kinds of objects:
 * scan (vector outlines; closed paths filled according to winding rules, like a
   PostScript path)
 * line art (a type of raster image)
-* bitmap (a type of raster image)
+* bitmap (a type of raster image, scalable by pixel replication)
 * halftone picture
 * graduated tint region (interpolated grayscale image)
 * tile (a repeating raster image)
@@ -33,38 +33,12 @@ The A/B pattern type produces repeating runs of black and white pixels in six
 different configurations that could produce effects like horizontal, vertical,
 and diagonal hatched patterns, as well as dashed lines and checkerboards.
 
-Image objects had priorities associated with them that could be composited to
-produce interesting graphic effects.
+Image objects had priorities associated with them so that they could be
+composited to produce interesting graphic effects.
 
 The scan object was added late in the development cycle and was hugely
 challenging to implement even though it was largely copied from working C code.
 Microcode is just more difficult to write and 16 registers is not enough!
-
-### Char Image Format
-
-The char image type encodes run data in a compact format.
-
-Images are represented by a series of adjacent scanlines that progress through
-the character from top to bottom. Each scanline consists of a series of 16-bit
-words. The value of these words indicate how the data is to be interpreted.
-
-A scanline that begins with a 0-word, and the following word is also 0, marks
-the end of the image. If the following word is non-0, it signals the number of
-times the data for the scanline that follows should be repeated.
-
-The bits of the remaining words of the scanline encode black and white runs of
-pixel data that are interpreted as follows.
-
-        00bbbbbbbwwwwwww ; short black run, short white run
-        1000000000000000 ; end of scanline
-        10wwwwwwwwwwwwww ; long white run
-        11bbbbbbbbbbbbbb ; long black run
-
-The microcode must detect end-of-image, scanline repetition, and end-of-scanline
-conditions but the run data is automatically decoded and assembled into a
-scanline buffer for output by the OBB.
-
-Other image formats operate in a similar fashion.
 
 ### RIP Hardware
 
@@ -142,6 +116,35 @@ that scanline ended. The OBP then advanced to the next scanline and repeated the
 process. This made it very efficient to process image data since all run
 computation was handled in hardware.
 
+### Char Image Format
+
+This section illustrates how char raster image decoding is shared by both the
+microcode and OBB hardware.
+
+The char image type encodes run data in a compact format.
+
+Images are represented by a series of adjacent scanlines that progress through
+the character from top to bottom. Each scanline consists of a series of 16-bit
+words. The value of these words indicate how the data is to be interpreted.
+
+A scanline that begins with a 0-word, and the following word is also 0, marks
+the end of the image. If the following word is non-0, it signals the number of
+times the scanline data that follows should be repeated.
+
+The bits of the remaining words of the scanline encode black and white runs of
+pixel data that are interpreted as follows.
+
+`00bbbbbbbwwwwwww` - short black run, short white run  
+`1000000000000000` - end of scanline  
+`10wwwwwwwwwwwwww` - long white run  
+`11bbbbbbbbbbbbbb` - long black run
+
+The microcode must detect end-of-image, scanline repetition, and end-of-scanline
+conditions but the run data is automatically decoded and assembled into a
+scanline buffer for output by the OBB.
+
+Other image formats operate in a similar fashion.
+
 ### GPP/OBP Communication
 
 Communication between the GPP and OBP was synchronized by semaphores in main
@@ -149,6 +152,9 @@ memory. The OBP could send interrupts to the GPP when notable events occurred bu
 the OBP polled for events from the GPP periodically. (We found this design to be
 much easier to implement than one in which the microcode is interruptible. This
 was an important lesson learned from the previous typesetter.)
+
+If the OBP timedout the GPP could reboot it and the OBP would be able to
+distinuish the reboot from a normal power-on boot.
 
 ### Image Data
 
@@ -225,10 +231,10 @@ The METASTEP software was very permissive about the allowable characters for
 names of fields and macros (but not square brackets [], for some reason). For
 example: 
 
-    r/w ; read/write cycle
-    D->Y ; move data from the D bus to the Y bus
-    Ic/ ; immediate carry negated
-    Y-L<> ; Y-bus to local memory cell
+`r/w` - read/write cycle  
+`D->Y` - move data from the D bus to the Y bus  
+`Ic/` - immediate carry negated  
+`Y-L<>` - Y-bus to local memory cell
 
 I got fairly creative with macro naming.
 
@@ -278,19 +284,6 @@ diagnostic tests that exercised much of the OBB's functionality. Executing these
 tests modified the contents of the scanline buffers. These were subsequently
 read by the GPP and compared to previously saved and verified scanline data.
 
-### Miscellaneous
-
-The OBP was debugged using visual output, an oscilloscope, and a logic analyzer.
-
-Two excellent software engineers wrote the code for the GPP and one exceptional
-hardware engineer designed the hardware. This is one of the most enjoyable
-projects in my 37-year professional software engineering career.
-
-I hope this might be of interest to see how complex embedded systems were
-developed and programmed in the 1980s.
-
-### Addendum
-
 I noticed that the OBB diagnostic OBB.MAL apparently has old definition names
 from OBB.H. They seem to map to the new names as follows:
 
@@ -314,8 +307,26 @@ from OBB.H. They seem to map to the new names as follows:
 | BAND_CNT | OBB_BAND_CNT |
 | LINE_CNT | OBB_LINE_CNT |
 
+Maybe the reason for this is that I never backed up a new version onto the
+floppy disks I have.
+
 I also noticed there doesn't seem to be a test for the halftone decoder. I have
-no idea why this would be omitted.
+no idea why this would be omitted since it was a complicated feature that many
+other imaging and patterning operations depended on. It's possible that I wrote
+this but it never got backed up to the floppies.
+
+### Miscellaneous
+
+The OBP was debugged using visual output, an oscilloscope, and a logic analyzer.
+
+Two excellent software engineers wrote the code for the GPP and one exceptional
+hardware engineer designed the hardware. This is one of the most enjoyable
+projects in my 37-year professional software engineering career.
+
+I hope this detailed look at a complex embedded system from the 1980s might be
+of interest to someone.
+
+### Addendum
 
 I can't remember what the Cx input to the AM2904 is connected to, but it is used
 by the addIc instruction which implies that it is connected to Ic (immediate
@@ -329,8 +340,7 @@ The METASTEP DOS executables (MMD.EXE, MA.EXE, ML.EXE, and MF.EXE) were also on
 the floppy disks I recovered and I thought it would be interesting to run them
 again on my sources. I have a MacBook, so I tried to run them with emulation
 using DOSBox, DOSBox-X, and QEMU, but I couldn't get any of the programs to run
-properly. MMD.EXE seems to get stuck in an infinite loop with and only the
-header of a listing file is output. The other programs fail because I do not
-have any valid input files for them to process. Maybe there's a dependency on
-another file that I didn't copy? Too bad, it would have been fun to run them
-again.
+properly. MMD.EXE seems to get stuck in an infinite loop and only a listing file
+header is output. The other programs fail because I do not have any valid input
+files for them to process. Maybe there's a dependency on another file that I
+didn't copy? Too bad, it would have been fun to run them again.
