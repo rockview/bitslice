@@ -88,7 +88,15 @@ executed in 3 cycles.
 
 No dedicated multiply or divide hardware was available so these operations were
 performed in software. A 16 x 16 bit multiply took 1.7us and a 32 / 16 bit
-divide took 3.5us. 
+divide took 3.5us. Bit 38 of the microword enables a multiply optimization that
+doubles its speed. When enabled, it connects the complement of bit 0 of the Q
+register to the I1 instruction bit of the AM29C101. This has the effect of
+switching the source operand control between AB and ZB allowing the multiplicand
+to be added (AB) to result when Q0 is set. (I think this idea came from a tech
+note that was published by AMD at the time.)
+
+Subroutines were supported by the AM2910 but it only allowed a maximum nesting
+depth of nine calls. Keeping that under control was a challenge.
 
 ### OBB Hardware
 
@@ -153,7 +161,7 @@ the OBP polled for events from the GPP periodically. (We found this design to be
 much easier to implement than one in which the microcode is interruptible. This
 was an important lesson learned from the previous typesetter.)
 
-If the OBP timedout the GPP could reboot it and the OBP would be able to
+If the OBP timed out the GPP could reboot it and the OBP would be able to
 distinuish the reboot from a normal power-on boot.
 
 ### Image Data
@@ -251,11 +259,11 @@ instruction. This sped up the code by more than a factor of three times.
 The OBP had an array of five LEDs that I used to indicate when the code was
 stuck in a loop waiting for an event:
 
-* BAND_WAIT     Waiting for OBB band to become available
-* LIST_LIST     Waiting for addition list
-* DEATH_WAIT    Waiting for a death buffer to become available
-* CMD_WAIT      Waiting to send command to GPP
-* PIC_WAIT      Waiting for picture data
+`BAND_WAIT` - waiting for OBB band to become available  
+`LIST_LIST` - waiting for addition list  
+`DEATH_WAIT` - waiting for a death buffer to become available  
+`CMD_WAIT` - waiting to send command to GPP  
+`PIC_WAIT` - waiting for picture data
 
 These could be monitored by a logic analyzer to better understand the dynamics
 of program execution and adjustments made accordingly.
