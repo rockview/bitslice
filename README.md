@@ -98,6 +98,9 @@ note that was published by AMD at the time.)
 Subroutines were supported by the AM2910 but it only allowed a maximum nesting
 depth of nine calls. Keeping that under control was a challenge.
 
+The microprogram that ran on the OBP during normal typesetter operation was
+called the Buffer Load Process (BLP) and comprised about 2200 microinstructions.
+
 ### OBB Hardware
 
 The OBB was quite complex and provided memory to store 256 scanlines of 64KiBits
@@ -217,7 +220,8 @@ allocated to the image available for reuse.
 
 The microprogram that ran on the OBP was called the Buffer Load Process (BLP).
 
-The OBP was programmed using a set of METASTEP development tools from the STEP
+The OBP was programmed using a set of [METASTEP development
+tools](https://dl.acm.org/doi/epdf/10.1145/18906.18922) from the STEP
 engineering company of Sunnyvale, California. These ran on the MS-DOS operating
 system and proved to be very flexible and reliable.
 
@@ -260,7 +264,7 @@ The OBP had an array of five LEDs that I used to indicate when the code was
 stuck in a loop waiting for an event:
 
 `BAND_WAIT` - waiting for OBB band to become available  
-`LIST_LIST` - waiting for addition list  
+`LIST_WAIT` - waiting for addition list  
 `DEATH_WAIT` - waiting for a death buffer to become available  
 `CMD_WAIT` - waiting to send command to GPP  
 `PIC_WAIT` - waiting for picture data
@@ -273,10 +277,10 @@ had available quicker than the laser could output them. In this case, the OBP
 would busy-wait for a band of scanlines to become available. Thus, it was easy
 to monitor the RIPs performance by observing the state of the BAND_WAIT LED.
 
-A technician in the lab built a simple circuit that would monitor the
-microprogram address and split and converted it into two voltage components that
-could drive an oscilloscope in XY mode and thus reveal any unexpected hotspots
-in the microprogram.
+A technician in the lab built a simple circuit that would split the microprogram
+address in two and convert each 6-bit half into a voltage that could drive an
+oscilloscope in XY mode. With some patience it was possible to identify hotspots
+within the microprogram.
 
 ### Diagnostics
 
